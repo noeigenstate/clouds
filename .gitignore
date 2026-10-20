@@ -1,0 +1,3 @@
+/target
+# Screenshots from the test scripts can show the desktop.
+skills/**/*.png

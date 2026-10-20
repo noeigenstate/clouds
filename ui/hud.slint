@@ -1,0 +1,352 @@
+// Floating cloud HUD: a frameless, transparent, always-on-top window showing only
+// the translation. The cloud itself is painted in Rust (src/cloud.rs) as three
+// layers that drift at their own pace: wisps behind, the body, and a fringe of
+// small puffs. Rust also clips the window to the cloud's shape so clicks next to
+// it reach the windows behind.
+
+// Candy fonts, both SIL OFL: Fredoka (semi-bold, very round) for English
+// results, ZCOOL KuaiLe (站酷快乐体, playful) for Chinese. Missing characters
+// fall back to system fonts.
+import "fonts/ZCOOLKuaiLe-Regular.ttf";
+import "fonts/Fredoka-SemiBold.ttf";
+import { SettingsWindow } from "settings.slint";
+
+export { SettingsWindow }
+
+component IconButton inherits Rectangle {
+    callback clicked;
+    out property <bool> hovered: ta.has-hover;
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+    background: ta.pressed ? #d9e4f2c8 : ta.has-hover ? #e8eff8d0 : transparent;
+    animate background { duration: 160ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Hud inherits Window {
+    in property <string> result-text;
+    in property <string> dict-text;
+    in property <string> error-text;
+    // A quiet remark under the result, e.g. "API failed, used Google".
+    in property <string> note-text;
+    in property <bool> busy;
+    in property <bool> paused;
+    in property <bool> copied;
+    // The result is English: show it in the round Latin font.
+    in property <bool> latin;
+    // The cloud resizes to its content: Rust picks the width from the text length
+    // and the height limit from the screen; past that the result scrolls.
+    in property <length> window-width: 484px;
+    in property <length> max-result-height: 600px;
+    in property <image> body-image;
+    in property <image> fringe-image;
+    in property <image> wisp-image;
+    // Minimized to a small puff; click it to open the cloud again.
+    in-out property <bool> mini;
+    // A translation arrived while minimized.
+    in-out property <bool> has-new;
+
+    // Where the text area sits; the cloud is painted around it.
+    out property <length> side: 52px;
+    out property <length> top-margin: 70px;
+    out property <length> bottom-margin: 52px;
+    out property <length> body-width: root.mini ? 40px : root.window-width - 2 * side;
+    out property <length> body-height: root.mini ? 22px : max(56px, body.preferred-height);
+
+    callback drag-by(length, length);
+    callback drag-finished();
+    callback copy-result();
+    callback toggle-pause();
+    callback quit();
+    callback open-settings();
+
+    // Candy colours: strawberry, orange, lime, blueberry, grape.
+    property <brush> candy: @linear-gradient(90deg, #f24b8f 0%, #f7892b 26%, #27b06e 50%, #3a86f0 74%, #9157f2 100%);
+
+    // Seconds since start, advanced by Rust 30 times a second: the slow drift
+    // looks just as smooth, and the cloud isn't redrawn at every screen refresh.
+    in property <float> t;
+    // Rising when the pointer rests on the cloud, slowly, like air carrying it.
+    // The pointer is on the cloud, or on one of its buttons.
+    property <bool> pointer-in: ta.has-hover || ta.pressed || min-btn.hovered || copy-btn.hovered
+        || pause-btn.hovered || close-btn.hovered;
+    property <float> lift: root.pointer-in ? 1 : 0;
+    animate lift { duration: 1100ms; easing: ease-in-out; }
+    // Positive = higher up: a 5 s bob plus the lift (Rust allows for 12px of motion).
+    property <length> float: 3px * Math.sin(root.t * 72deg) + 6px * root.lift;
+    // The buttons stay hidden until the pointer comes onto the cloud.
+    property <float> tools: root.pointer-in ? 1 : 0;
+    animate tools { duration: 260ms; easing: ease-out; }
+
+    title: "小白云";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    default-font-family: "ZCOOL KuaiLe";
+    width: body-width + 2 * side;
+    height: top-margin + body-height + bottom-margin;
+
+    // Wisps trail behind, swaying farther and fading in and out.
+    Image {
+        x: 7px * Math.sin(root.t * 26deg);
+        y: -root.float * 0.6 + 2px * Math.sin(root.t * 31deg);
+        width: root.width;
+        height: root.height;
+        source: root.wisp-image;
+        image-fit: fill;
+        opacity: 0.6 + 0.4 * Math.sin(root.t * 34deg + 40deg);
+    }
+
+    Image {
+        y: -root.float;
+        width: root.width;
+        height: root.height;
+        source: root.body-image;
+        image-fit: fill;
+    }
+
+    // The fringe churns slightly against the body, so the edges look alive.
+    Image {
+        x: 3px * Math.sin(root.t * 41deg + 20deg);
+        y: -root.float + 2px * Math.sin(root.t * 53deg);
+        width: root.width;
+        height: root.height;
+        source: root.fringe-image;
+        image-fit: fill;
+        opacity: 0.8 + 0.2 * Math.sin(root.t * 47deg);
+    }
+
+    // Drag the cloud anywhere; right-click for settings; click the small puff
+    // to open it again.
+    property <bool> dragged;
+    ta := TouchArea {
+        mouse-cursor: root.mini ? MouseCursor.pointer : MouseCursor.move;
+        moved => {
+            if self.pressed {
+                if abs(self.mouse-x - self.pressed-x) > 3px || abs(self.mouse-y - self.pressed-y) > 3px {
+                    root.dragged = true;
+                }
+                root.drag-by(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+            }
+        }
+        pointer-event(e) => {
+            if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                root.dragged = false;
+            }
+            if e.button == PointerEventButton.left && e.kind == PointerEventKind.up {
+                root.drag-finished();
+            }
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
+                root.open-settings();
+            }
+        }
+        clicked => {
+            if root.mini && !root.dragged {
+                root.mini = false;
+                root.has-new = false;
+            }
+        }
+    }
+
+    // The small puff: a candy "译", with a dot when something new was translated.
+    if root.mini: Rectangle {
+        x: side - 6px;
+        y: top-margin - 8px - root.float;
+        width: body-width + 12px;
+        height: body-height + 16px;
+        Text {
+            text: "译";
+            font-size: 22px;
+            color: root.candy;
+            stroke: #ffffff;
+            stroke-width: 1.5px;
+            stroke-style: outside;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.has-new: Rectangle {
+            x: parent.width - 6px;
+            y: -2px;
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: #f24b8f;
+            opacity: 0.55 + 0.45 * abs(Math.sin(root.t * 180deg));
+        }
+    }
+
+    // The text layer floats as one piece; it is rendered once and reused while
+    // only its position changes.
+    Rectangle {
+      visible: !root.mini;
+      y: -root.float;
+      width: root.width;
+      height: root.height;
+      cache-rendering-hint: true;
+      body := VerticalLayout {
+        x: side;
+        y: top-margin;
+        width: body-width;
+        height: self.preferred-height;
+        alignment: start;
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-bottom: 8px;
+        spacing: 6px;
+
+        // A quiet toolbar: status dot, then copy / pause / close.
+        HorizontalLayout {
+            height: 24px;
+            spacing: 2px;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    background: root.paused ? #b9c2cf : root.error-text != "" ? #e88080 : #8fc3f5;
+                    opacity: root.busy ? 0.3 + 0.7 * abs(Math.sin(root.t * 400deg)) : 0.9;
+                }
+            }
+
+            Rectangle { }
+
+            min-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.mini = true; }
+                Rectangle {
+                    width: 10px;
+                    height: 1.6px;
+                    border-radius: 1px;
+                    background: #8696ad;
+                }
+            }
+
+            copy-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.copy-result(); }
+                Path {
+                    width: 11px;
+                    height: 11px;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                    stroke: root.copied ? #4caf7a : #8696ad;
+                    stroke-width: 1.2px;
+                    commands: root.copied ? "M 2 6.5 L 5 9.5 L 10.5 2.5" : "M 4 4 L 11 4 L 11 11 L 4 11 Z M 1 8 L 1 1 L 8 1";
+                }
+            }
+
+            pause-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.toggle-pause(); }
+                if root.paused: Path {
+                    width: 9px;
+                    height: 11px;
+                    viewbox-width: 10;
+                    viewbox-height: 12;
+                    fill: #8696ad;
+                    commands: "M 1 0 L 10 6 L 1 12 Z";
+                }
+                if !root.paused: HorizontalLayout {
+                    alignment: center;
+                    spacing: 3px;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
+                    Rectangle { width: 2.5px; border-radius: 1px; background: #8696ad; }
+                    Rectangle { width: 2.5px; border-radius: 1px; background: #8696ad; }
+                }
+            }
+
+            close-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.quit(); }
+                Path {
+                    width: 9px;
+                    height: 9px;
+                    viewbox-width: 10;
+                    viewbox-height: 10;
+                    stroke: #8696ad;
+                    stroke-width: 1.3px;
+                    commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+                }
+            }
+        }
+
+        // Only the translation. Very long ones scroll (mouse wheel).
+        flick := Flickable {
+            height: min(result.preferred-height, root.max-result-height);
+            content-width: flick.width;
+            content-height: result.preferred-height;
+            // Candy letters: a soft lilac shadow underneath, then the text filled
+            // with a rainbow-candy gradient and coated with a thin white outline.
+            Text {
+                x: 0;
+                y: 1.5px;
+                width: result.width;
+                text: result.text;
+                font-size: result.font-size;
+                font-family: result.font-family;
+                font-weight: result.font-weight;
+                letter-spacing: result.letter-spacing;
+                wrap: word-wrap;
+                color: #d9c8ee;
+                opacity: result.opacity;
+            }
+            // As wide as the text itself, so even one word gets every candy colour.
+            result := Text {
+                x: 0;
+                y: 0;
+                width: min(self.preferred-width, flick.width);
+                text: root.result-text != "" ? root.result-text : root.paused ? "已暂停" : "选中文字，即刻翻译";
+                color: root.candy;
+                font-family: root.latin ? "Fredoka" : "ZCOOL KuaiLe";
+                font-weight: root.latin ? 600 : 400;
+                font-size: root.result-text != "" ? (root.latin ? 19px : 20px) : 16px;
+                letter-spacing: root.latin ? 0.2px : 0.5px;
+                stroke: #ffffff;
+                stroke-width: 1.5px;
+                stroke-style: outside;
+                wrap: word-wrap;
+                opacity: root.busy ? 0.5 : root.result-text != "" ? 1 : 0.6;
+                animate opacity { duration: 200ms; }
+            }
+        }
+
+        if root.dict-text != "": HorizontalLayout {
+          alignment: start;
+          Text {
+            text: root.dict-text;
+            color: root.candy;
+            font-family: root.latin ? "Fredoka" : "ZCOOL KuaiLe";
+            font-weight: root.latin ? 600 : 400;
+            opacity: 0.75;
+            font-size: 14px;
+            wrap: word-wrap;
+          }
+        }
+
+        if root.note-text != "": Text {
+            text: root.note-text;
+            font-family: "Microsoft YaHei UI";
+            color: #9aa6b8;
+            font-size: 11px;
+            wrap: word-wrap;
+            overflow: elide;
+            height: min(self.preferred-height, 2 * 16px);
+        }
+
+        if root.error-text != "": Text {
+            text: root.error-text;
+            color: #c86464;
+            font-size: 11px;
+            wrap: word-wrap;
+            overflow: elide;
+            height: min(self.preferred-height, 2 * 16px);
+        }
+    }
+  }
+}

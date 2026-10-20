@@ -1,0 +1,300 @@
+// Settings window, opened by right-clicking the cloud: choose the translation
+// engine (free Google, an online API, or a local model) and try it out.
+
+import { LineEdit } from "std-widgets.slint";
+
+// A rounded candy button. `highlighted` (a chosen option, or the main action)
+// gets the strawberry-to-grape gradient.
+component CandyButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> highlighted;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 32px;
+    min-width: label.preferred-width + 32px;
+    border-radius: 16px;
+    opacity: root.enabled ? 1 : 0.5;
+    background: root.highlighted
+        ? (ta.pressed ? @linear-gradient(90deg, #d93d7d 0%, #7c45d9 100%) : @linear-gradient(90deg, #f24b8f 0%, #9157f2 100%))
+        : (ta.pressed ? #e4e8f2 : ta.has-hover ? #eceff8 : #f3f5fa);
+    animate background { duration: 150ms; }
+    label := Text {
+        text: root.text;
+        color: root.highlighted ? #ffffff : #5d6b82;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: #8a96aa;
+        font-size: 12px;
+    }
+    @children
+}
+
+export component SettingsWindow inherits Window {
+    // 0 = free Google, 1 = online API, 2 = local model.
+    in-out property <int> engine;
+    // 0 = Claude, 1 = OpenAI-compatible.
+    in-out property <int> api-kind;
+    in-out property <string> api-base;
+    in-out property <string> api-key;
+    in-out property <string> api-model;
+    in-out property <string> local-base;
+    in-out property <string> local-model;
+    // Models offered by the service in the current section.
+    in property <[string]> models;
+    in property <string> status;
+    in property <bool> status-ok;
+    in property <bool> busy;
+    in-out property <bool> show-models;
+
+    callback engine-changed();
+    callback api-kind-changed();
+    callback refresh-models();
+    callback test();
+    callback save();
+    callback close-window();
+    callback drag-by(length, length);
+
+    title: "翻译引擎";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    default-font-family: "Microsoft YaHei UI";
+    width: 420px;
+    height: card-layout.preferred-height + 28px;
+
+    Rectangle {
+        x: 14px;
+        y: 10px;
+        width: parent.width - 28px;
+        height: card-layout.preferred-height;
+        border-radius: 22px;
+        background: #ffffff;
+        border-width: 1px;
+        border-color: #e6ebf3;
+        drop-shadow-blur: 14px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #5b7fae38;
+
+        // Drag the window by its header.
+        TouchArea {
+            height: 56px;
+            y: 0;
+            mouse-cursor: move;
+            moved => {
+                if self.pressed {
+                    root.drag-by(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                }
+            }
+        }
+
+        card-layout := VerticalLayout {
+            padding: 20px;
+            padding-top: 14px;
+            spacing: 14px;
+
+            HorizontalLayout {
+                height: 32px;
+                Text {
+                    text: "翻译引擎";
+                    font-family: "ZCOOL KuaiLe";
+                    font-size: 22px;
+                    color: @linear-gradient(90deg, #f24b8f 0%, #f7892b 30%, #3a86f0 70%, #9157f2 100%);
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: close-ta.has-hover ? #f1f3f8 : transparent;
+                    Path {
+                        width: 10px;
+                        height: 10px;
+                        viewbox-width: 10;
+                        viewbox-height: 10;
+                        stroke: #8696ad;
+                        stroke-width: 1.4px;
+                        commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+                    }
+                    close-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.close-window(); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                CandyButton {
+                    text: "免费 Google";
+                    highlighted: root.engine == 0;
+                    clicked => { root.engine = 0; root.engine-changed(); }
+                }
+                CandyButton {
+                    text: "在线 API";
+                    highlighted: root.engine == 1;
+                    clicked => { root.engine = 1; root.engine-changed(); }
+                }
+                CandyButton {
+                    text: "本地模型";
+                    highlighted: root.engine == 2;
+                    clicked => { root.engine = 2; root.engine-changed(); }
+                }
+            }
+
+            if root.engine == 0: Text {
+                text: "无需设置，约 0.4 秒出结果；单词还会附带词典释义。";
+                color: #6c7b92;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            if root.engine == 1: VerticalLayout {
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    CandyButton {
+                        text: "Claude";
+                        highlighted: root.api-kind == 0;
+                        clicked => { root.api-kind = 0; root.api-kind-changed(); }
+                    }
+                    CandyButton {
+                        text: "OpenAI 兼容";
+                        highlighted: root.api-kind == 1;
+                        clicked => { root.api-kind = 1; root.api-kind-changed(); }
+                    }
+                }
+                Field {
+                    label: "接口地址";
+                    LineEdit {
+                        text <=> root.api-base;
+                        placeholder-text: root.api-kind == 0 ? "https://api.anthropic.com" : "如 https://api.deepseek.com/v1";
+                    }
+                }
+                Field {
+                    label: "API Key（加密保存在本机）";
+                    LineEdit {
+                        text <=> root.api-key;
+                        input-type: password;
+                        placeholder-text: root.api-kind == 0 ? "sk-ant-..." : "sk-...";
+                    }
+                }
+                Field {
+                    label: "模型";
+                    LineEdit {
+                        text <=> root.api-model;
+                        placeholder-text: root.api-kind == 0 ? "claude-opus-5-5" : "如 deepseek-chat";
+                    }
+                }
+            }
+
+            if root.engine == 2: VerticalLayout {
+                spacing: 12px;
+                Text {
+                    text: "支持 Ollama、LM Studio 等 OpenAI 兼容的本地服务。";
+                    color: #6c7b92;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                Field {
+                    label: "服务地址";
+                    LineEdit {
+                        text <=> root.local-base;
+                        placeholder-text: "http://localhost:11434/v1";
+                    }
+                }
+                Field {
+                    label: "模型";
+                    LineEdit {
+                        text <=> root.local-model;
+                        placeholder-text: "点「刷新」读取已安装的模型";
+                    }
+                }
+            }
+
+            // Pick from the models the service reports.
+            if root.engine != 0: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                CandyButton {
+                    text: root.models.length > 0 ? (root.show-models ? "收起模型列表 ▴" : "可用模型（" + root.models.length + "）▾") : "暂无模型列表";
+                    enabled: root.models.length > 0;
+                    clicked => { root.show-models = !root.show-models; }
+                }
+                CandyButton {
+                    text: root.busy ? "读取中…" : "刷新";
+                    enabled: !root.busy;
+                    clicked => { root.refresh-models(); }
+                }
+            }
+
+            if root.engine != 0 && root.show-models && root.models.length > 0: Rectangle {
+                height: min(list.preferred-height, 180px);
+                border-radius: 12px;
+                background: #f7f8fc;
+                Flickable {
+                    content-height: list.preferred-height;
+                    list := VerticalLayout {
+                        padding: 4px;
+                        for m in root.models: Rectangle {
+                            height: 30px;
+                            border-radius: 8px;
+                            background: row-ta.has-hover ? #ffffff : transparent;
+                            Text {
+                                x: 10px;
+                                text: m;
+                                color: m == (root.engine == 1 ? root.api-model : root.local-model) ? #9157f2 : #3e4a60;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            row-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if root.engine == 1 { root.api-model = m; } else { root.local-model = m; }
+                                    root.show-models = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.status != "": Text {
+                text: root.status;
+                color: root.status-ok ? #27a06a : #d0565f;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                CandyButton {
+                    text: root.busy ? "请稍候…" : "测试";
+                    enabled: !root.busy;
+                    clicked => { root.test(); }
+                }
+                CandyButton {
+                    text: "保存";
+                    highlighted: true;
+                    clicked => { root.save(); }
+                }
+            }
+        }
+    }
+}
