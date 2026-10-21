@@ -152,22 +152,12 @@ export component Hud inherits Window {
         }
     }
 
-    // The small puff: a candy "译", with a dot when something new was translated.
+    // The small puff: just a little cloud, with a dot when something new was translated.
     if root.mini: Rectangle {
         x: side - 6px;
         y: top-margin - 8px - root.float;
         width: body-width + 12px;
         height: body-height + 16px;
-        Text {
-            text: "译";
-            font-size: 22px;
-            color: root.candy;
-            stroke: #ffffff;
-            stroke-width: 1.5px;
-            stroke-style: outside;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
         if root.has-new: Rectangle {
             x: parent.width - 6px;
             y: -2px;

@@ -39,7 +39,7 @@ Start-up options, handy for trying things out: `--translate "some text"`
   (`%APPDATA%\xiaobaiyun\position.txt`).
 - **Buttons** (they appear when the pointer is on the cloud): minimize ·
   copy translation · pause/resume · close. Minimized, the cloud becomes a small
-  puff with a candy “译”; a pink dot means a new translation is waiting. Click
+  cloud puff; a pink dot means a new translation is waiting. Click
   the puff to open it again.
 - **Right-click** the cloud to choose the translation engine (see below).
 - The cloud is painted procedurally (`src/cloud.rs`): sunlit billows, blue-grey
