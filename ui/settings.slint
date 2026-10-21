@@ -59,6 +59,10 @@ export component SettingsWindow inherits Window {
     in property <bool> status-ok;
     in property <bool> busy;
     in-out property <bool> show-models;
+    // "v0.1.4", and what the upgrade button is doing.
+    in property <string> version;
+    in property <string> update-status;
+    in property <bool> updating;
 
     callback engine-changed();
     callback api-kind-changed();
@@ -66,6 +70,7 @@ export component SettingsWindow inherits Window {
     callback test();
     callback save();
     callback close-window();
+    callback check-update();
     callback drag-started();
     callback dragging();
 
@@ -123,6 +128,34 @@ export component SettingsWindow inherits Window {
                     vertical-alignment: center;
                 }
                 Rectangle { }
+                Text {
+                    text: root.version;
+                    color: #a3adbd;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                // Upgrade now: an arrow pointing up.
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: update-ta.has-hover ? #f1f3f8 : transparent;
+                    opacity: root.updating ? 0.4 : 1;
+                    Path {
+                        width: 12px;
+                        height: 12px;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
+                        stroke: #9157f2;
+                        stroke-width: 1.6px;
+                        commands: "M 6 11 L 6 1.5 M 1.5 6 L 6 1.5 L 10.5 6";
+                    }
+                    update-ta := TouchArea {
+                        enabled: !root.updating;
+                        mouse-cursor: pointer;
+                        clicked => { root.check-update(); }
+                    }
+                }
                 Rectangle {
                     width: 28px;
                     height: 28px;
@@ -142,6 +175,13 @@ export component SettingsWindow inherits Window {
                         clicked => { root.close-window(); }
                     }
                 }
+            }
+
+            if root.update-status != "": Text {
+                text: root.update-status;
+                color: #6c7b92;
+                font-size: 12px;
+                wrap: word-wrap;
             }
 
             HorizontalLayout {

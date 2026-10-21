@@ -9,7 +9,7 @@ use std::time::Instant;
 use slint::{ComponentHandle, ModelRc, PhysicalPosition, SharedString, VecModel};
 
 use crate::settings::{self, ApiKind, Engine, Settings};
-use crate::{translate, window, Hud, SettingsWindow};
+use crate::{translate, update, window, Hud, SettingsWindow};
 
 /// The engine pills in the window, in order.
 const ENGINES: [Engine; 3] = [Engine::Google, Engine::Api, Engine::Local];
@@ -114,6 +114,23 @@ pub fn wire(hud: &Hud, win: &SettingsWindow, settings: Arc<RwLock<Settings>>) {
             if let Some(hud) = hud.upgrade() {
                 hud.set_note_text("".into());
             }
+        }
+    });
+
+    win.set_version(format!("v{}", update::VERSION).into());
+    win.on_check_update({
+        let (win, hud) = (win.as_weak(), hud.as_weak());
+        move || {
+            let form = win.unwrap();
+            form.set_updating(true);
+            form.set_update_status("正在检查更新…".into());
+            let win = win.clone();
+            update::update_now(hud.clone(), move |status| {
+                let _ = win.upgrade_in_event_loop(move |form| {
+                    form.set_updating(!status.is_empty() && status.starts_with("正在"));
+                    form.set_update_status(status.into());
+                });
+            });
         }
     });
 

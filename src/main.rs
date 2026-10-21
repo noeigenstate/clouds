@@ -9,6 +9,7 @@ mod selection;
 mod settings;
 mod settings_window;
 mod translate;
+mod update;
 mod window;
 
 use std::cell::Cell;
@@ -36,6 +37,13 @@ struct Options {
     mini: bool,
     /// `--settings`: open the settings window.
     settings: bool,
+    /// `--update-now`: check for a newer version and install it at once.
+    update_now: bool,
+    /// `--updated-from <version>`: just installed by the update (see `update`).
+    updated: bool,
+    /// `--self-test`: exit as soon as the window could be created; the update
+    /// checks a downloaded version this way.
+    self_test: bool,
 }
 
 impl Options {
@@ -46,6 +54,9 @@ impl Options {
             translate,
             mini: args.iter().any(|a| a == "--mini"),
             settings: args.iter().any(|a| a == "--settings"),
+            update_now: args.iter().any(|a| a == "--update-now"),
+            updated: args.iter().any(|a| a == "--updated-from"),
+            self_test: args.iter().any(|a| a == "--self-test"),
         }
     }
 }
@@ -53,6 +64,9 @@ impl Options {
 fn main() -> Result<(), slint::PlatformError> {
     let options = Options::parse();
     let hud = Hud::new()?;
+    if options.self_test {
+        return Ok(());
+    }
     let paused = Arc::new(AtomicBool::new(false));
     let settings = Arc::new(RwLock::new(settings::load()));
     log!("started, engine {:?}", settings.read().unwrap().engine);
@@ -92,6 +106,27 @@ fn main() -> Result<(), slint::PlatformError> {
         thread::spawn(move || translator.translate(text));
     }
     hud.set_mini(options.mini);
+    if options.updated {
+        let weak = hud.as_weak();
+        Timer::single_shot(Duration::from_millis(1500), move || {
+            if let (Some(hud), Some((version, notes))) = (weak.upgrade(), update::finish()) {
+                let notes: Vec<String> = notes.iter().map(|n| format!("· {n}")).collect();
+                show_result(
+                    &hud,
+                    format!("已升级到 v{version}"),
+                    &notes.join(
+                        "
+",
+                    ),
+                );
+                hud.invoke_open();
+            }
+        });
+    }
+    update::start_checking();
+    if options.update_now {
+        update::update_now(hud.as_weak(), |status| log!("update: {status}"));
+    }
     if options.settings {
         let weak = hud.as_weak();
         Timer::single_shot(Duration::from_millis(300), move || {
@@ -184,6 +219,8 @@ impl Translator {
     fn translate(&self, text: String) {
         let id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.hud.upgrade_in_event_loop(|hud| {
+            // A new selection opens the minimized cloud.
+            hud.invoke_open();
             hud.set_busy(true);
             hud.set_error_text("".into());
         });
@@ -219,9 +256,6 @@ impl Translator {
                     Ok(t) => {
                         show_result(&hud, t.text, &t.dict.join("\n"));
                         hud.set_note_text(t.note.unwrap_or_default().into());
-                        if hud.get_mini() {
-                            hud.set_has_new(true);
-                        }
                     }
                     Err(e) => hud.set_error_text(format!("翻译失败 · {e}").into()),
                 }
@@ -239,7 +273,7 @@ fn show_result(hud: &Hud, text: String, dict: &str) {
 }
 
 /// The cloud minimizes itself after this long without being used.
-const IDLE_MINIMIZE: Duration = Duration::from_secs(180);
+const IDLE_MINIMIZE: Duration = Duration::from_secs(30);
 
 /// The cloud's heartbeat, about 30 times a second: advances the drift clock,
 /// finishes the window setup once the native window exists, keeps the cloud on
@@ -283,6 +317,10 @@ fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32), selection
         ticks = ticks.wrapping_add(1);
         if ticks.is_multiple_of(15) {
             window::stay_on_top(hwnd);
+            // A downloaded update goes in while nobody uses the cloud.
+            if hud.get_mini() && !hud.get_busy() {
+                update::install_when_idle(&hud);
+            }
         }
 
         // Used = the pointer is on it (hover, click, drag) or a new selection
@@ -293,7 +331,8 @@ fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32), selection
             last_used = Instant::now();
         } else if last_used.elapsed() > IDLE_MINIMIZE {
             log!("idle for {} s, minimizing", IDLE_MINIMIZE.as_secs());
-            hud.set_mini(true);
+            hud.invoke_minimize();
+            last_used = Instant::now();
         }
 
         let key = cloud_key(&hud);

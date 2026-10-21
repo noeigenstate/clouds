@@ -358,14 +358,14 @@ fn sse_data<'a>(
 }
 
 /// Checks the status of a complete (non-streamed) response and parses its JSON.
-fn read_json(mut response: ureq::http::Response<ureq::Body>, who: &str) -> Result<Value, String> {
+pub fn read_json(mut response: ureq::http::Response<ureq::Body>, who: &str) -> Result<Value, String> {
     check_status(&mut response, who)?;
     let body = response.body_mut().read_to_string().map_err(|e| format!("{who}: {e}"))?;
     serde_json::from_str(&body).map_err(|e| format!("{who}: {e}"))
 }
 
 /// Turns an HTTP error status into a readable message from the response body.
-fn check_status(response: &mut ureq::http::Response<ureq::Body>, who: &str) -> Result<(), String> {
+pub fn check_status(response: &mut ureq::http::Response<ureq::Body>, who: &str) -> Result<(), String> {
     let status = response.status().as_u16();
     if status < 400 {
         return Ok(());
@@ -429,7 +429,7 @@ fn llm_agent(local: bool) -> &'static ureq::Agent {
     }
 }
 
-fn build_agent(timeout: Duration, via_proxy: bool) -> ureq::Agent {
+pub fn build_agent(timeout: Duration, via_proxy: bool) -> ureq::Agent {
     let proxy = via_proxy
         .then(|| {
             ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]

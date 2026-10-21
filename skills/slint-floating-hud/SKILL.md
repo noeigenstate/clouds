@@ -71,8 +71,9 @@ started in the background can't take the foreground, so don't test a
 
 ## Idle
 
-`tick()` minimizes the cloud after `IDLE_MINIMIZE` (3 min) with no pointer on it
-(`pointer-in`), no translation running and no new selection.
+`tick()` minimizes the cloud after `IDLE_MINIMIZE` (30 s) with no pointer on it
+(`pointer-in`), no translation running and no new selection; a new selection
+opens it again (`Translator::translate`).
 
 ## Code style
 
@@ -127,3 +128,19 @@ engine's answer and time.
   their copy disappears. Launch one copy for them at the end.
 - In Git Bash, very long `python - <<'EOF'` heredocs can fail to parse; write
   the patch script to a file and run it instead.
+
+## Updates (`src/update.rs`)
+
+Release flow the updater depends on: the GitHub release's latest tag `vX.Y.Z`,
+an asset named exactly `xiaobaiyun.exe`, and notes written as `- 标题：说明`
+lines (the cloud shows the part before `：`). A new version must keep
+`--self-test` (exit right after `Hud::new()`) and `--updated-from`, or every
+update to it fails and is rolled back.
+
+Test without GitHub: debug builds read `XIAOBAIYUN_UPDATE_URL` (a JSON like
+the releases API). Serve a fake release with `python -m http.server <port>`
+(pick a free port; some are reserved on Windows and fail with WinError 10013),
+copy the debug exe to a temp folder and run it with `--update-now`. For the
+failure path, serve a program that exits at once (`fn main() {}`): the exe
+must come back unchanged and `%APPDATA%\xiaobaiyun\update-failed.txt` hold the
+version.

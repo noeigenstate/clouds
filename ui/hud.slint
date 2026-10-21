@@ -13,10 +13,34 @@ import { SettingsWindow } from "settings.slint";
 
 export { SettingsWindow }
 
+// A painted cloud image that can stand in for the minimized puff, so the
+// cloud can grow out of it and shrink into it: `own` 1 draws the image at its
+// painted size, 0 scales it to the puff's size with its text area's centre on
+// the puff's.
+component MorphImage inherits Image {
+    in property <float> own: 1;
+    in property <length> puff-width;
+    in property <length> puff-height;
+    // How far the text area's centre sits below the image's centre.
+    in property <length> body-drop;
+    property <length> w: self.source.width * 1px;
+    property <length> h: self.source.height * 1px;
+    property <float> k: root.own >= 1 || root.w == 0 ? 1
+        : root.puff-width / root.w + (1 - root.puff-width / root.w) * root.own;
+    // Where the text area's centre goes: from the puff's to the image's own.
+    property <length> cx: root.puff-width / 2 + (root.w - root.puff-width) / 2 * root.own;
+    property <length> cy: root.puff-height / 2 + root.body-drop + (root.h - root.puff-height) / 2 * root.own;
+    width: root.w * root.k;
+    height: root.h * root.k;
+    x: root.cx - root.w / 2 * root.k;
+    y: root.cy - (root.h / 2 + root.body-drop) * root.k;
+}
+
 // One layer of the painted cloud. When Rust hands over a repainted layer, it
 // fades in over the previous one instead of popping. Both keep their painted
 // size (one image pixel per logical pixel), so a stale layer is never stretched
-// while the window changes size.
+// while the window changes size; only minimizing and opening scale them (see
+// MorphImage).
 component CloudLayer inherits Rectangle {
     in property <image> current;
     in property <image> previous;
@@ -25,18 +49,30 @@ component CloudLayer inherits Rectangle {
     // Applied to each image, not to this element: opacity on a container makes
     // the renderer draw it off-screen first, every frame.
     in property <float> strength: 1;
-    Image {
+    in property <float> current-own: 1;
+    in property <float> previous-own: 1;
+    in property <length> puff-width;
+    in property <length> puff-height;
+    in property <length> body-drop;
+    // Opening or minimizing: the new layer turns solid early, so the growing
+    // cloud never looks like a grey ghost.
+    in property <bool> morphing;
+    MorphImage {
         source: root.previous;
-        width: self.source.width * 1px;
-        height: self.source.height * 1px;
+        own: root.previous-own;
+        puff-width: root.puff-width;
+        puff-height: root.puff-height;
+        body-drop: root.body-drop;
         visible: root.fade < 1;
-        opacity: root.strength * (1 - root.fade * root.fade);
+        opacity: root.strength * (1 - Math.pow(root.fade, root.morphing ? 3 : 2));
     }
-    Image {
+    MorphImage {
         source: root.current;
-        width: self.source.width * 1px;
-        height: self.source.height * 1px;
-        opacity: root.strength * root.fade;
+        own: root.current-own;
+        puff-width: root.puff-width;
+        puff-height: root.puff-height;
+        body-drop: root.body-drop;
+        opacity: root.strength * (root.morphing ? min(1, 3 * root.fade) : root.fade);
     }
 }
 
@@ -78,10 +114,9 @@ export component Hud inherits Window {
     in property <image> old-body-image;
     in property <image> old-fringe-image;
     in property <image> old-wisp-image;
-    // Minimized to a small puff; click it to open the cloud again.
+    // Minimized to a small puff; a click or a new selection opens it again
+    // (`open()`). The minimize button and Rust minimize it with `minimize()`.
     in-out property <bool> mini;
-    // A translation arrived while minimized.
-    in-out property <bool> has-new;
 
     // Where the text area sits; the cloud is painted around it.
     out property <length> side: 52px;
@@ -122,10 +157,50 @@ export component Hud inherits Window {
     // `fading` once they are in: only then is the cloud redrawn every refresh.
     public function cloud-repainted() {
         root.repainted-at = animation-tick();
+        let now-mini = root.body-image.width * 1px == root.puff-width;
+        root.morph = now-mini == root.painted-mini ? 0 : now-mini ? -1 : 1;
+        root.painted-mini = now-mini;
+        if now-mini {
+            root.collapsing = false;
+        }
     }
     in property <bool> fading;
     property <duration> repainted-at;
     property <float> fade: root.fading ? clamp((animation-tick() - root.repainted-at) / 320ms, 0, 1) : 1;
+
+    // Minimizing, the cloud first shrinks to the puff's size, then the puff is
+    // painted and fades in over it. Opening, the window grows at once, and once
+    // the full cloud is painted it grows out of the puff.
+    public function minimize() {
+        if !root.mini && !root.collapsing {
+            root.collapsing = true;
+            root.collapse-at = animation-tick();
+        }
+    }
+    public function open() {
+        root.collapsing = false;
+        root.mini = false;
+    }
+    property <length> puff-width: 40px + 2 * root.side;
+    property <length> puff-height: root.top-margin + 22px + root.bottom-margin;
+    property <length> body-drop: (root.top-margin - root.bottom-margin) / 2;
+    property <bool> collapsing;
+    property <duration> collapse-at;
+    property <float> shrink: root.collapsing ? clamp((animation-tick() - root.collapse-at) / 300ms, 0, 1) : 0;
+    collapse-timer := Timer {
+        interval: 300ms;
+        running: root.collapsing && !root.mini;
+        triggered => {
+            root.mini = true;
+        }
+    }
+    // Whether the layers on show are the puff, and how the last repaint changed
+    // that: 1 = opened, -1 = minimized.
+    property <bool> painted-mini;
+    property <int> morph;
+    property <float> grow: root.morph == 1 ? root.fade * root.fade * (3 - 2 * root.fade) : 1;
+    property <float> current-own: root.collapsing ? 1 - root.shrink * root.shrink * (3 - 2 * root.shrink) : root.grow;
+    property <float> previous-own: root.morph == -1 ? 0 : 1;
     // Rising when the pointer rests on the cloud, slowly, like air carrying it.
     // The pointer is on the cloud, or on one of its buttons.
     out property <bool> pointer-in: ta.has-hover || ta.pressed || min-btn.hovered || copy-btn.hovered
@@ -173,6 +248,12 @@ export component Hud inherits Window {
         current: root.wisp-image;
         previous: root.old-wisp-image;
         fade: root.fade;
+        current-own: root.current-own;
+        previous-own: root.previous-own;
+        puff-width: root.puff-width;
+        puff-height: root.puff-height;
+        body-drop: root.body-drop;
+        morphing: root.morph != 0;
         strength: 0.6 + 0.4 * Math.sin(root.t * 34deg + 40deg);
     }
 
@@ -181,6 +262,12 @@ export component Hud inherits Window {
         current: root.body-image;
         previous: root.old-body-image;
         fade: root.fade;
+        current-own: root.current-own;
+        previous-own: root.previous-own;
+        puff-width: root.puff-width;
+        puff-height: root.puff-height;
+        body-drop: root.body-drop;
+        morphing: root.morph != 0;
     }
 
     // The fringe churns slightly against the body, so the edges look alive.
@@ -190,6 +277,12 @@ export component Hud inherits Window {
         current: root.fringe-image;
         previous: root.old-fringe-image;
         fade: root.fade;
+        current-own: root.current-own;
+        previous-own: root.previous-own;
+        puff-width: root.puff-width;
+        puff-height: root.puff-height;
+        body-drop: root.body-drop;
+        morphing: root.morph != 0;
         strength: 0.8 + 0.2 * Math.sin(root.t * 47deg);
     }
 
@@ -220,26 +313,8 @@ export component Hud inherits Window {
         }
         clicked => {
             if root.mini && !root.dragged {
-                root.mini = false;
-                root.has-new = false;
+                root.open();
             }
-        }
-    }
-
-    // The small puff: just a little cloud, with a dot when something new was translated.
-    if root.mini: Rectangle {
-        x: side - 6px;
-        y: top-margin - 8px - root.float;
-        width: body-width + 12px;
-        height: body-height + 16px;
-        if root.has-new: Rectangle {
-            x: parent.width - 6px;
-            y: -2px;
-            width: 10px;
-            height: 10px;
-            border-radius: 5px;
-            background: #f24b8f;
-            opacity: 0.55 + 0.45 * abs(Math.sin(root.t * 180deg));
         }
     }
 
@@ -247,6 +322,9 @@ export component Hud inherits Window {
     // only its position changes.
     Rectangle {
         visible: !root.mini;
+        // Gone in the first half of shrinking; in the second half of growing.
+        opacity: root.collapsing ? max(0, 1 - 2 * root.shrink)
+            : root.painted-mini ? 0 : root.morph == 1 ? clamp((root.fade - 0.5) * 2, 0, 1) : 1;
         y: -root.float;
         width: root.width;
         height: root.height;
@@ -274,7 +352,7 @@ export component Hud inherits Window {
 
             min-btn := IconButton {
                 opacity: root.tools;
-                clicked => { root.mini = true; }
+                clicked => { root.minimize(); }
                 Rectangle {
                     width: 10px;
                     height: 1.6px;
