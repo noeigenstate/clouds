@@ -128,7 +128,7 @@ export component Hud inherits Window {
     property <float> fade: root.fading ? clamp((animation-tick() - root.repainted-at) / 320ms, 0, 1) : 1;
     // Rising when the pointer rests on the cloud, slowly, like air carrying it.
     // The pointer is on the cloud, or on one of its buttons.
-    property <bool> pointer-in: ta.has-hover || ta.pressed || min-btn.hovered || copy-btn.hovered
+    out property <bool> pointer-in: ta.has-hover || ta.pressed || min-btn.hovered || copy-btn.hovered
         || pause-btn.hovered || close-btn.hovered;
     property <float> lift: root.pointer-in ? 1 : 0;
     animate lift { duration: 1100ms; easing: ease-in-out; }
@@ -139,6 +139,7 @@ export component Hud inherits Window {
     animate tools { duration: 260ms; easing: ease-out; }
 
     title: "小白云";
+    icon: @image-url("../assets/logo-128.png");
     no-frame: true;
     always-on-top: true;
     background: transparent;

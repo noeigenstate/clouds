@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 30 224 224" width="256" height="256">
+  <!-- 小白云: a little white cloud resting on a candy rainbow. -->
+  <defs>
+    <linearGradient id="belly" x1="0" y1="0" x2="0" y2="1">
+      <stop offset=".55" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dbe8f7"/>
+    </linearGradient>
+    <g id="cloud">
+      <circle cx="86" cy="146" r="36"/>
+      <circle cx="126" cy="118" r="48"/>
+      <circle cx="170" cy="142" r="36"/>
+      <rect x="50" y="128" width="156" height="58" rx="29"/>
+    </g>
+  </defs>
+  <g fill="none" stroke-width="13" stroke-linecap="round">
+    <path d="M30 170 a98 98 0 0 1 196 0" stroke="#f24b8f"/>
+    <path d="M46 170 a82 82 0 0 1 164 0" stroke="#f7892b"/>
+    <path d="M62 170 a66 66 0 0 1 132 0" stroke="#27b06e"/>
+    <path d="M78 170 a50 50 0 0 1 100 0" stroke="#3a86f0"/>
+  </g>
+  <g transform="translate(38 84) scale(.7)">
+    <use href="#cloud" fill="#cfdcee" stroke="#cfdcee" stroke-width="10"/>
+    <use href="#cloud" fill="url(#belly)"/>
+  </g>
+</svg>

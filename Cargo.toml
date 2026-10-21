@@ -1,6 +1,6 @@
 [package]
 name = "xiaobaiyun"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "小白云 XiaoBaiYun: a little cloud that floats on your screen and translates whatever you select, Chinese <-> English"
 license = "MIT"
@@ -38,6 +38,7 @@ features = [
 ]
 
 [build-dependencies]
+embed-resource = "3.0.12"
 slint-build = "1.18"
 
 [profile.release]

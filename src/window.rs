@@ -11,9 +11,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
-    HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GW_HWNDPREV, HWND_TOPMOST, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 use crate::settings::data_file;
@@ -50,6 +50,33 @@ pub fn make_floating(hwnd: HWND) {
         let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED;
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
     }
+}
+
+/// Puts the window back in front when another app's window covers it:
+/// full-screen apps such as Remote Desktop are always-on-top too, and cover the
+/// cloud whenever they're activated. Tool windows (tooltips, menus) and our own
+/// settings window may stay in front of it.
+pub fn stay_on_top(hwnd: HWND) {
+    let cloud = window_rect(hwnd);
+    unsafe {
+        let mut above = GetWindow(hwnd, GW_HWNDPREV);
+        while let Ok(w) = above {
+            let r = window_rect(w);
+            let overlaps = r.left < cloud.right && cloud.left < r.right && r.top < cloud.bottom && cloud.top < r.bottom;
+            let tool = GetWindowLongPtrW(w, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0;
+            if overlaps && !tool && IsWindowVisible(w).as_bool() && window_pid(w) != std::process::id() {
+                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                return;
+            }
+            above = GetWindow(w, GW_HWNDPREV);
+        }
+    }
+}
+
+pub unsafe fn window_pid(hwnd: HWND) -> u32 {
+    let mut pid = 0;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    pid
 }
 
 pub fn window_rect(hwnd: HWND) -> Area {

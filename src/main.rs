@@ -86,6 +86,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let settings_window = SettingsWindow::new()?;
     settings_window::wire(&hud, &settings_window, settings);
 
+    let selections = translator.generation.clone();
     hud.show()?;
     if let Some(text) = options.translate {
         thread::spawn(move || translator.translate(text));
@@ -101,7 +102,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let ticker = Timer::default();
-    ticker.start(TimerMode::Repeated, Duration::from_millis(33), tick(&hud, first.region, first_key));
+    ticker.start(TimerMode::Repeated, Duration::from_millis(33), tick(&hud, first.region, first_key, selections));
 
     slint::run_event_loop_until_quit()?;
     let pos = hud.window().position();
@@ -237,12 +238,19 @@ fn show_result(hud: &Hud, text: String, dict: &str) {
     hud.set_dict_text(dict.into());
 }
 
+/// The cloud minimizes itself after this long without being used.
+const IDLE_MINIMIZE: Duration = Duration::from_secs(180);
+
 /// The cloud's heartbeat, about 30 times a second: advances the drift clock,
 /// finishes the window setup once the native window exists, keeps the cloud on
-/// screen, and repaints it (off the UI thread) whenever its text area changes size.
-fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32)) -> impl FnMut() {
+/// screen and in front, minimizes it when idle, and repaints it (off the UI thread) whenever
+/// its text area changes size. `selections` counts the selections translated.
+fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32), selections: Arc<AtomicU64>) -> impl FnMut() {
     let weak = hud.as_weak();
     let clock = Instant::now();
+    let mut last_used = Instant::now();
+    let mut seen_selections = 0;
+    let mut ticks = 0u32;
     let mut first_region = Some(first_region);
     let mut native: Option<HWND> = None;
     let mut painted_for = first_key;
@@ -270,6 +278,22 @@ fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32)) -> impl F
         if rect != last_rect && !window::left_button_down() {
             last_rect = rect;
             keep_on_screen(&hud, hwnd);
+        }
+
+        ticks = ticks.wrapping_add(1);
+        if ticks.is_multiple_of(15) {
+            window::stay_on_top(hwnd);
+        }
+
+        // Used = the pointer is on it (hover, click, drag) or a new selection
+        // came in; minimized, it waits for a click instead.
+        let selected = selections.load(Ordering::Relaxed);
+        if hud.get_mini() || hud.get_pointer_in() || hud.get_busy() || selected != seen_selections {
+            seen_selections = selected;
+            last_used = Instant::now();
+        } else if last_used.elapsed() > IDLE_MINIMIZE {
+            log!("idle for {} s, minimizing", IDLE_MINIMIZE.as_secs());
+            hud.set_mini(true);
         }
 
         let key = cloud_key(&hud);

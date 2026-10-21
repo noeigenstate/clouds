@@ -27,11 +27,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetAncestor, GetClassNameW, GetCursorInfo, GetForegroundWindow, GetMessageW, GetSystemMetrics,
-    GetWindowRect, GetWindowThreadProcessId, LoadCursorW, SetWindowsHookExW, WindowFromPoint, CURSORINFO, GA_ROOT,
-    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, MSLLHOOKSTRUCT, SM_CXDOUBLECLK,
-    SM_CYDOUBLECLK, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    GetWindowRect, LoadCursorW, SetWindowsHookExW, WindowFromPoint, CURSORINFO, GA_ROOT, IDC_SIZEALL, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, MSLLHOOKSTRUCT, SM_CXDOUBLECLK, SM_CYDOUBLECLK, WH_MOUSE_LL,
+    WM_LBUTTONDOWN, WM_LBUTTONUP,
 };
 
+use crate::window::window_pid;
 use crate::{clipboard, log, ocr};
 
 #[derive(Clone, Copy, Debug)]
@@ -350,12 +351,6 @@ unsafe fn rect_of(hwnd: HWND) -> RECT {
     let mut r = RECT::default();
     let _ = GetWindowRect(hwnd, &mut r);
     r
-}
-
-unsafe fn window_pid(hwnd: HWND) -> u32 {
-    let mut pid = 0;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    pid
 }
 
 unsafe fn class_name(hwnd: HWND) -> String {

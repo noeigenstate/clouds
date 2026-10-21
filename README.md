@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" width="128" alt="小白云 logo"></p>
+
 # 小白云 · XiaoBaiYun
 
 ![小白云](docs/preview.png)
@@ -40,7 +42,8 @@ Start-up options, handy for trying things out: `--translate "some text"`
 - **Buttons** (they appear when the pointer is on the cloud): minimize ·
   copy translation · pause/resume · close. Minimized, the cloud becomes a small
   cloud puff; a pink dot means a new translation is waiting. Click
-  the puff to open it again.
+  the puff to open it again. Left alone for 3 minutes (no pointer on it, no
+  new selection), the cloud minimizes itself.
 - **Right-click** the cloud to choose the translation engine (see below).
 - The cloud is painted procedurally (`src/cloud.rs`): sunlit billows, blue-grey
   shade underneath, translucent edges and faint wisps. It bobs gently, its

@@ -48,6 +48,32 @@ description: Building, styling and verifying the transparent always-on-top Slint
   `python -m fontTools.varLib.instancer <var.ttf> wght=600 wdth=100 --update-name-table -o <out.ttf>`.
   Draw icons with `Path` rather than symbol glyphs.
 
+## Logo and icon
+
+`assets/logo.svg` is the source. To regenerate `logo.ico` / `logo-128.png`,
+render the SVG at 1024px with headless Edge
+(`msedge --headless=new --default-background-color=00000000 --window-size=1024,1024 --screenshot=<png> <html with the svg>`),
+then with Pillow: `im.resize((256,256)).save("logo.ico", sizes=[(16,16),(20,20),(24,24),(32,32),(40,40),(48,48),(64,64),(128,128),(256,256)])`.
+`build.rs` embeds the .ico through `embed-resource` and `assets/app.rc`; both
+windows set `icon:` to `logo-128.png`. In an HTML preview page, don't put SVG
+inside `<template>`: the HTML parser ignores `/>` and nests the shapes.
+
+## Staying in front
+
+Full-screen Remote Desktop (and other always-on-top apps) are topmost too, so
+the one activated last covers the cloud. `window::stay_on_top` (every 0.5 s
+from `tick()`) walks the windows above the cloud (`GW_HWNDPREV`) and re-raises
+it only when another app's visible, non-tool window overlaps it, so tooltips
+and our own settings window can stay in front. To test it, show a `TopMost`
+WinForms window over the cloud and hit-test with `WindowFromPoint`; a script
+started in the background can't take the foreground, so don't test a
+"foreground is topmost" condition that way.
+
+## Idle
+
+`tick()` minimizes the cloud after `IDLE_MINIMIZE` (3 min) with no pointer on it
+(`pointer-in`), no translation running and no new selection.
+
 ## Code style
 
 `cargo fmt` (settings in `rustfmt.toml`) and `cargo clippy --release --all-targets`
