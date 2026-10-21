@@ -12,6 +12,7 @@ mod translate;
 mod window;
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -110,14 +111,21 @@ fn main() -> Result<(), slint::PlatformError> {
 
 /// The cloud's own buttons and dragging.
 fn wire_hud(hud: &Hud, paused: Arc<AtomicBool>) {
-    hud.on_drag_by({
+    let drag = Rc::new(window::Drag::default());
+    hud.on_drag_started({
+        let (weak, drag) = (hud.as_weak(), drag.clone());
+        move || {
+            if let Some(hwnd) = window::hwnd(weak.unwrap().window()) {
+                drag.start(hwnd);
+            }
+        }
+    });
+    hud.on_dragging({
         let weak = hud.as_weak();
-        move |dx, dy| {
-            let hud = weak.unwrap();
-            let window = hud.window();
-            let scale = window.scale_factor();
-            let pos = window.position();
-            window.set_position(PhysicalPosition::new(pos.x + (dx * scale) as i32, pos.y + (dy * scale) as i32));
+        move || {
+            if let Some(hwnd) = window::hwnd(weak.unwrap().window()) {
+                drag.follow(hwnd);
+            }
         }
     });
 
@@ -229,9 +237,9 @@ fn show_result(hud: &Hud, text: String, dict: &str) {
     hud.set_dict_text(dict.into());
 }
 
-/// The cloud's 30 fps heartbeat: advances the drift clock, finishes the window
-/// setup once the native window exists, keeps the cloud on screen, and repaints
-/// it (off the UI thread) whenever its text area changes size.
+/// The cloud's heartbeat, about 30 times a second: advances the drift clock,
+/// finishes the window setup once the native window exists, keeps the cloud on
+/// screen, and repaints it (off the UI thread) whenever its text area changes size.
 fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32)) -> impl FnMut() {
     let weak = hud.as_weak();
     let clock = Instant::now();
@@ -304,10 +312,22 @@ fn cloud_spec(hud: &Hud) -> cloud::Spec {
     }
 }
 
+/// Hands repainted layers to the cloud, which fades them in over the old ones.
 fn show_cloud(hud: &Hud, layers: &cloud::Layers) {
+    hud.set_old_body_image(hud.get_body_image());
+    hud.set_old_fringe_image(hud.get_fringe_image());
+    hud.set_old_wisp_image(hud.get_wisp_image());
     hud.set_body_image(Image::from_rgba8(layers.body.clone()));
     hud.set_fringe_image(Image::from_rgba8(layers.fringe.clone()));
     hud.set_wisp_image(Image::from_rgba8(layers.wisps.clone()));
+    hud.set_fading(true);
+    hud.invoke_cloud_repainted();
+    let weak = hud.as_weak();
+    Timer::single_shot(Duration::from_millis(400), move || {
+        if let Some(hud) = weak.upgrade() {
+            hud.set_fading(false);
+        }
+    });
 }
 
 /// Moves the window so the cloud stays inside the screen's work area.

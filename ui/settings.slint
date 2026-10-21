@@ -66,7 +66,8 @@ export component SettingsWindow inherits Window {
     callback test();
     callback save();
     callback close-window();
-    callback drag-by(length, length);
+    callback drag-started();
+    callback dragging();
 
     title: "翻译引擎";
     no-frame: true;
@@ -94,9 +95,14 @@ export component SettingsWindow inherits Window {
             height: 56px;
             y: 0;
             mouse-cursor: move;
+            pointer-event(e) => {
+                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                    root.drag-started();
+                }
+            }
             moved => {
                 if self.pressed {
-                    root.drag-by(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                    root.dragging();
                 }
             }
         }

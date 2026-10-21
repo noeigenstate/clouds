@@ -264,10 +264,8 @@ fn claude(
     check_status(&mut response, "Claude")?;
 
     let mut out = String::new();
-    for line in BufReader::new(response.body_mut().as_reader()).lines() {
-        let line = line.map_err(|e| format!("Claude: {e}"))?;
-        let Some(data) = line.strip_prefix("data: ") else { continue };
-        let Ok(event) = serde_json::from_str::<Value>(data) else { continue };
+    for event in sse_data(&mut response, "Claude") {
+        let event = event?;
         match event["type"].as_str() {
             Some("content_block_delta") if event["delta"]["type"] == "text_delta" => {
                 out.push_str(event["delta"]["text"].as_str().unwrap_or(""));
@@ -331,19 +329,32 @@ fn openai(
     check_status(&mut response, who)?;
 
     let mut out = String::new();
-    for line in BufReader::new(response.body_mut().as_reader()).lines() {
-        let line = line.map_err(|e| format!("{who}: {e}"))?;
-        let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
-        if data == "[DONE]" {
-            break;
-        }
-        let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
-        if let Some(piece) = chunk["choices"][0]["delta"]["content"].as_str() {
+    for chunk in sse_data(&mut response, who) {
+        if let Some(piece) = chunk?["choices"][0]["delta"]["content"].as_str() {
             out.push_str(piece);
             on_partial(&out);
         }
     }
     Ok(out)
+}
+
+/// The JSON payloads of a streamed (server-sent events) response: every
+/// `data: {...}` line, up to OpenAI's closing `data: [DONE]`.
+fn sse_data<'a>(
+    response: &'a mut ureq::http::Response<ureq::Body>,
+    who: &'a str,
+) -> impl Iterator<Item = Result<Value, String>> + 'a {
+    BufReader::new(response.body_mut().as_reader())
+        .lines()
+        .filter_map(move |line| match line {
+            Ok(line) => line.strip_prefix("data:").map(|data| Ok(data.trim().to_string())),
+            Err(e) => Some(Err(format!("{who}: {e}"))),
+        })
+        .take_while(|data| data.as_deref() != Ok("[DONE]"))
+        .filter_map(|data| match data {
+            Ok(data) => serde_json::from_str(&data).ok().map(Ok),
+            Err(e) => Some(Err(e)),
+        })
 }
 
 /// Checks the status of a complete (non-streamed) response and parses its JSON.

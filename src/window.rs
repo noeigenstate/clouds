@@ -1,6 +1,8 @@
 //! Win32 details of the cloud window: no taskbar button, never steals focus,
 //! clipped to the cloud's shape, stays on screen, remembers its position.
 
+use std::cell::Cell;
+
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -9,9 +11,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, GetWindowRect, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW,
+    GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+    HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 use crate::settings::data_file;
@@ -108,6 +110,36 @@ pub fn move_to(hwnd: HWND, x: i32, y: i32) {
     unsafe {
         let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+}
+
+/// Moves a window with the mouse. It follows the cursor's screen position, not
+/// offsets measured inside the moving window, so it neither lags nor jitters.
+#[derive(Default)]
+pub struct Drag {
+    /// Cursor and window top-left when the button went down.
+    start: Cell<Option<(POINT, POINT)>>,
+}
+
+impl Drag {
+    pub fn start(&self, hwnd: HWND) {
+        let rect = window_rect(hwnd);
+        self.start.set(Some((cursor(), POINT { x: rect.left, y: rect.top })));
+    }
+
+    pub fn follow(&self, hwnd: HWND) {
+        if let Some((cursor0, window0)) = self.start.get() {
+            let now = cursor();
+            move_to(hwnd, window0.x + now.x - cursor0.x, window0.y + now.y - cursor0.y);
+        }
+    }
+}
+
+fn cursor() -> POINT {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    p
 }
 
 pub fn save_position(x: i32, y: i32) {

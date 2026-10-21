@@ -1,11 +1,12 @@
 //! The settings window, opened by right-clicking the cloud. It edits a copy of
 //! the settings and only replaces the live ones on "save".
 
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Instant;
 
-use slint::{ComponentHandle, LogicalPosition, ModelRc, PhysicalPosition, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, PhysicalPosition, SharedString, VecModel};
 
 use crate::settings::{self, ApiKind, Engine, Settings};
 use crate::{translate, window, Hud, SettingsWindow};
@@ -123,12 +124,21 @@ pub fn wire(hud: &Hud, win: &SettingsWindow, settings: Arc<RwLock<Settings>>) {
         }
     });
 
-    win.on_drag_by({
+    let drag = Rc::new(window::Drag::default());
+    win.on_drag_started({
+        let (win, drag) = (win.as_weak(), drag.clone());
+        move || {
+            if let Some(hwnd) = window::hwnd(win.unwrap().window()) {
+                drag.start(hwnd);
+            }
+        }
+    });
+    win.on_dragging({
         let win = win.as_weak();
-        move |dx, dy| {
-            let win = win.unwrap();
-            let pos = win.window().position().to_logical(win.window().scale_factor());
-            win.window().set_position(LogicalPosition::new(pos.x + dx, pos.y + dy));
+        move || {
+            if let Some(hwnd) = window::hwnd(win.unwrap().window()) {
+                drag.follow(hwnd);
+            }
         }
     });
 }

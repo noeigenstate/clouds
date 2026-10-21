@@ -34,8 +34,26 @@ impl Word {
     fn center_x(&self) -> f32 {
         (self.left + self.right) / 2.0
     }
+
+    /// From OCR image coordinates (scaled up by `scale`, origin at the captured
+    /// area's corner) to screen pixels.
+    fn into_screen(self, left: i32, top: i32, scale: f32) -> Word {
+        Word {
+            left: left as f32 + self.left / scale,
+            top: top as f32 + self.top / scale,
+            right: left as f32 + self.right / scale,
+            bottom: top as f32 + self.bottom / scale,
+            text: self.text,
+        }
+    }
 }
 
+/// How far `v` lies outside the range `lo..=hi` (0 inside it).
+fn gap(v: f32, lo: f32, hi: f32) -> f32 {
+    (lo - v).max(v - hi).max(0.0)
+}
+
+/// Reads the text a drag or double-click selected on the foreground window.
 pub fn read_selection(gesture: Gesture) -> Option<String> {
     unsafe {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
@@ -105,7 +123,8 @@ fn pick_word(lines: &[Vec<Word>], at: POINT) -> String {
     let Some(i) = line_at(lines, at.y as f32) else { return String::new() };
     let line = &lines[i];
     let x = at.x as f32;
-    let Some(word) = line.iter().min_by(|p, q| distance(p, x).total_cmp(&distance(q, x))) else {
+    let distance = |w: &Word| gap(x, w.left, w.right);
+    let Some(word) = line.iter().min_by(|p, q| distance(p).total_cmp(&distance(q))) else {
         return String::new();
     };
     if word.text.chars().any(is_cjk) {
@@ -115,35 +134,15 @@ fn pick_word(lines: &[Vec<Word>], at: POINT) -> String {
     }
 }
 
-fn distance(word: &Word, x: f32) -> f32 {
-    if x < word.left {
-        word.left - x
-    } else if x > word.right {
-        x - word.right
-    } else {
-        0.0
-    }
-}
-
+/// The line nearest to height `y` (within 30 px).
 fn line_at(lines: &[Vec<Word>], y: f32) -> Option<usize> {
-    let span = |l: &Vec<Word>| {
-        let top = l.iter().map(|w| w.top).fold(f32::MAX, f32::min);
-        let bottom = l.iter().map(|w| w.bottom).fold(f32::MIN, f32::max);
-        (top, bottom)
-    };
     lines
         .iter()
         .enumerate()
-        .map(|(i, l)| {
-            let (top, bottom) = span(l);
-            let d = if y < top {
-                top - y
-            } else if y > bottom {
-                y - bottom
-            } else {
-                0.0
-            };
-            (i, d)
+        .map(|(i, line)| {
+            let top = line.iter().map(|w| w.top).fold(f32::MAX, f32::min);
+            let bottom = line.iter().map(|w| w.bottom).fold(f32::MIN, f32::max);
+            (i, gap(y, top, bottom))
         })
         .filter(|&(_, d)| d < 30.0)
         .min_by(|p, q| p.1.total_cmp(&q.1))
@@ -199,50 +198,38 @@ fn recognize(left: i32, top: i32, right: i32, bottom: i32) -> Option<Vec<Vec<Wor
     )
     .ok()?;
 
-    // The Chinese engine also reads Latin text, but splits English words ("yo u");
-    // lines that are mostly Latin are taken from the English engine instead.
-    let english = run_engine("en", &bitmap);
-    let lines = match (run_engine("zh", &bitmap), english) {
-        (Some(zh), Some(en)) => zh
-            .into_iter()
-            .map(|line| {
-                let chars: Vec<char> = line.iter().flat_map(|w| w.text.chars()).collect();
-                let cjk = chars.iter().filter(|&&c| is_cjk(c)).count();
-                if cjk * 3 >= chars.len() {
-                    return line;
-                }
-                let (top, bottom) = (line[0].top, line[0].bottom);
-                en.iter()
-                    .filter(|l| l[0].top < bottom && l[0].bottom > top)
-                    .max_by(|a, b| {
-                        let overlap = |l: &&Vec<Word>| l[0].bottom.min(bottom) - l[0].top.max(top);
-                        overlap(a).total_cmp(&overlap(b))
-                    })
-                    .cloned()
-                    .unwrap_or(line)
-            })
-            .collect(),
+    let lines = match (run_engine("zh", &bitmap), run_engine("en", &bitmap)) {
+        (Some(zh), Some(en)) => prefer_english_lines(zh, &en),
         (zh, en) => zh.or(en)?,
     };
     let scale = up as f32;
-    Some(
-        lines
-            .into_iter()
-            .map(|line| {
-                line.into_iter()
-                    .map(|w| Word {
-                        left: left as f32 + w.left / scale,
-                        top: top as f32 + w.top / scale,
-                        right: left as f32 + w.right / scale,
-                        bottom: top as f32 + w.bottom / scale,
-                        text: w.text,
-                    })
-                    .collect()
-            })
-            .collect(),
-    )
+    Some(lines.into_iter().map(|line| line.into_iter().map(|w| w.into_screen(left, top, scale)).collect()).collect())
 }
 
+/// The Chinese engine also reads Latin text, but splits English words ("yo u"):
+/// lines that are mostly Latin are taken from the English engine's reading of
+/// the same height instead.
+fn prefer_english_lines(zh: Vec<Vec<Word>>, en: &[Vec<Word>]) -> Vec<Vec<Word>> {
+    zh.into_iter()
+        .map(|line| {
+            let chars: Vec<char> = line.iter().flat_map(|w| w.text.chars()).collect();
+            let cjk = chars.iter().filter(|&&c| is_cjk(c)).count();
+            if cjk * 3 >= chars.len() {
+                return line;
+            }
+            let (top, bottom) = (line[0].top, line[0].bottom);
+            let overlap = |l: &Vec<Word>| l[0].bottom.min(bottom) - l[0].top.max(top);
+            en.iter()
+                .filter(|l| overlap(l) > 0.0)
+                .max_by(|a, b| overlap(a).total_cmp(&overlap(b)))
+                .cloned()
+                .unwrap_or(line)
+        })
+        .collect()
+}
+
+/// Runs the installed OCR engine whose language tag starts with `lang_prefix`
+/// ("zh", "en"); its lines come back top to bottom, in image coordinates.
 fn run_engine(lang_prefix: &str, bitmap: &SoftwareBitmap) -> Option<Vec<Vec<Word>>> {
     let language: Language = OcrEngine::AvailableRecognizerLanguages()
         .ok()?
@@ -267,7 +254,7 @@ fn run_engine(lang_prefix: &str, bitmap: &SoftwareBitmap) -> Option<Vec<Vec<Word
             lines.push(words);
         }
     }
-    lines.sort_by(|a: &Vec<Word>, b| a[0].top.total_cmp(&b[0].top));
+    lines.sort_by(|a, b| a[0].top.total_cmp(&b[0].top));
     Some(lines)
 }
 
@@ -291,15 +278,15 @@ fn grab_screen(left: i32, top: i32, w: i32, h: i32) -> Option<Vec<u8>> {
         let mut bits = std::ptr::null_mut();
         let result = CreateDIBSection(Some(mem), &info, DIB_RGB_COLORS, &mut bits, None, 0).ok().and_then(|dib| {
             let old = SelectObject(mem, dib.into());
-            let ok = BitBlt(mem, 0, 0, w, h, Some(screen), left, top, SRCCOPY | CAPTUREBLT).is_ok();
-            let mut pixels = None;
-            if ok {
+            let copied = BitBlt(mem, 0, 0, w, h, Some(screen), left, top, SRCCOPY | CAPTUREBLT).is_ok();
+            let pixels = copied.then(|| {
                 let mut data = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
+                // The screen has no alpha channel: make every pixel opaque.
                 for px in data.chunks_exact_mut(4) {
                     px[3] = 255;
                 }
-                pixels = Some(data);
-            }
+                data
+            });
             SelectObject(mem, old);
             let _ = DeleteObject(dib.into());
             pixels
@@ -310,6 +297,7 @@ fn grab_screen(left: i32, top: i32, w: i32, h: i32) -> Option<Vec<u8>> {
     }
 }
 
+/// Enlarges a BGRA image `k` times by repeating pixels.
 fn upscale(src: &[u8], w: usize, h: usize, k: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * k * h * k * 4];
     for y in 0..h * k {

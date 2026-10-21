@@ -15,11 +15,21 @@ description: Building, styling and verifying the transparent always-on-top Slint
   them into `SetWindowRgn`. If the layers in `hud.slint` move farther than those
   constants, raise them, or the moving edges get clipped.
 - The cloud is three images painted in Rust (on all cores) and animated
-  **inside** the window. Rust advances the clock `t` 30 times a second; never use
-  `animation-tick()` for the idle drift, it redraws at every screen refresh
-  (measured 19% of a core vs 2% at 30 fps). The text layer has
-  `cache-rendering-hint: true` and moves as one piece, so keep anything that
-  changes every frame out of it.
+  **inside** the window. Rust advances the clock `t` about 30 times a second.
+  Any binding that reads `animation-tick()` makes Slint redraw at every screen
+  refresh for as long as it is read (measured 14% vs 7% CPU): only read it
+  behind a flag that is on for a short animation (see `fading`).
+- The text layer has `cache-rendering-hint: true` and moves as one piece, so
+  keep anything that changes every frame out of it.
+- Put `opacity` on an `Image`, not on a container around it: a container with
+  opacity is drawn off-screen first, every frame.
+- Repainted layers fade in over the old ones (`CloudLayer`); images keep their
+  painted size, so a stale layer is never stretched while the window resizes.
+- Move windows from the cursor's screen position (`window::Drag`), not from
+  pointer offsets inside the window that is moving (those lag and jitter).
+- Compare CPU/GPU numbers only within one session: an RDP session and the
+  local console render very differently. Measure the released exe next to the
+  new build.
 - Preview the painting without the app:
   `CLOUD_DUMP_DIR=<dir> cargo test --release dump_cloud -- --ignored`, then
   composite `cloud-*.rgba` (484x200 RGBA) over a sky-blue and a dark background.
