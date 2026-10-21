@@ -2,7 +2,8 @@
 # and saves a DPI-aware screenshot of it next to this script.
 param([Parameter(Mandatory)][string]$Exe, [string]$Text = "", [int]$Wait = 5, [string]$Out = "cloud.png")
 $dir = Split-Path $MyInvocation.MyCommand.Path
-Get-Process xiaobaiyun -ErrorAction SilentlyContinue | Stop-Process -Force
+# Only copies of this exe: never the one the user is running from elsewhere.
+Get-Process xiaobaiyun -ErrorAction SilentlyContinue | Where-Object Path -eq $Exe | Stop-Process -Force
 Start-Sleep -Milliseconds 300
 if ($Text) { $p = Start-Process $Exe -ArgumentList @("--translate", "`"$Text`"") -PassThru } else { $p = Start-Process $Exe -PassThru }
 Start-Sleep -Seconds $Wait

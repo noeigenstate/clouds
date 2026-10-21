@@ -7,9 +7,10 @@
 //! which is slower, so they get a longer wait; if nothing comes back (no
 //! clipboard sync, VNC, screen sharing) the selected area is read with OCR.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -239,17 +240,54 @@ fn capture(gesture: Gesture) -> Option<String> {
         }
 
         let remote = REMOTE_APPS.contains(&process.as_str());
-        let wait = Duration::from_millis(if remote { 1500 } else { 450 });
-        if let Some(text) = copy_selection(wait) {
+        if !remote {
+            let text = copy_selection(Duration::from_millis(450))?;
             log!("copied {} characters", text.chars().count());
             return Some(text);
         }
-        if !remote {
-            return None;
+        if remote_clipboard_works(&process) {
+            if let Some(text) = copy_selection(Duration::from_millis(1500)) {
+                log!("copied {} characters", text.chars().count());
+                remote_clipboard_result(&process, true);
+                return Some(text);
+            }
+            remote_clipboard_result(&process, false);
+        } else {
+            log!("{process}: the clipboard hasn't come back lately, reading the screen");
         }
         let text = ocr::read_selection(gesture);
         log!("OCR read {} characters", text.as_ref().map_or(0, |t| t.chars().count()));
         text
+    }
+}
+
+/// After this many misses in a row, a remote viewer's clipboard is not tried for
+/// a while: each try waits 1.5 s, and sends Ctrl+C into the remote session.
+const REMOTE_MISSES: u32 = 2;
+const REMOTE_RETRY_AFTER: Duration = Duration::from_secs(300);
+
+/// Per remote viewer: misses in a row, and when the last one happened.
+fn remote_misses() -> &'static Mutex<HashMap<String, (u32, Instant)>> {
+    static MISSES: OnceLock<Mutex<HashMap<String, (u32, Instant)>>> = OnceLock::new();
+    MISSES.get_or_init(Default::default)
+}
+
+/// Whether to try the clipboard for this remote viewer (it shares the
+/// clipboard, or hasn't been tried recently).
+fn remote_clipboard_works(process: &str) -> bool {
+    match remote_misses().lock().unwrap().get(process) {
+        Some(&(misses, last)) => misses < REMOTE_MISSES || last.elapsed() > REMOTE_RETRY_AFTER,
+        None => true,
+    }
+}
+
+fn remote_clipboard_result(process: &str, worked: bool) {
+    let mut misses = remote_misses().lock().unwrap();
+    if worked {
+        misses.remove(process);
+    } else {
+        let entry = misses.entry(process.to_string()).or_insert((0, Instant::now()));
+        *entry = (entry.0 + 1, Instant::now());
     }
 }
 

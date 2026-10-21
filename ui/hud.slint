@@ -67,7 +67,9 @@ export component Hud inherits Window {
     in property <bool> latin;
     // The cloud resizes to its content: Rust picks the width from the text length
     // and the height limit from the screen; past that the result scrolls.
-    in property <length> window-width: 484px;
+    // The widest the text area may get; longer text wraps (Rust picks it from
+    // the text's length and the screen).
+    in property <length> max-body-width: 380px;
     in property <length> max-result-height: 600px;
     // The painted cloud layers, and the ones they replace (see CloudLayer).
     in property <image> body-image;
@@ -85,8 +87,12 @@ export component Hud inherits Window {
     out property <length> side: 52px;
     out property <length> top-margin: 70px;
     out property <length> bottom-margin: 52px;
-    out property <length> body-width: root.mini ? 40px : root.window-width - 2 * side;
-    out property <length> body-height: root.mini ? 22px : max(56px, body.preferred-height);
+    // The text area just fits the text: as wide as its widest line (in steps of
+    // 8px, so streaming text doesn't repaint the cloud for every character), at
+    // least wide enough for the buttons.
+    out property <length> body-width: root.mini ? 40px
+        : clamp(ceil((root.natural-width + 2 * root.pad) / 8px) * 8px, 112px, root.max-body-width);
+    out property <length> body-height: root.mini ? 22px : max(30px, body.preferred-height);
 
     callback drag-started();
     callback dragging();
@@ -99,6 +105,12 @@ export component Hud inherits Window {
     // Result fonts: round Fredoka for English, ZCOOL KuaiLe for Chinese.
     property <string> result-font: root.latin ? "Fredoka" : "ZCOOL KuaiLe";
     property <int> result-weight: root.latin ? 600 : 400;
+    property <length> result-size: root.result-text != "" ? (root.latin ? 19px : 20px) : 16px;
+    property <length> result-spacing: root.latin ? 0.2px : 0.5px;
+    property <string> shown-text: root.result-text != "" ? root.result-text
+        : root.paused ? "已暂停" : "选中文字，即刻翻译";
+    // Padding between the text and the cloud's edge.
+    property <length> pad: 12px;
     // Candy colours: strawberry, orange, lime, blueberry, grape.
     property <brush> candy: @linear-gradient(90deg, #f24b8f 0%, #f7892b 26%, #27b06e 50%, #3a86f0 74%, #9157f2 100%);
 
@@ -132,6 +144,25 @@ export component Hud inherits Window {
     background: transparent;
     default-font-family: "ZCOOL KuaiLe";
     width: body-width + 2 * side;
+
+    // Invisible copies that measure the text's natural (unwrapped) width.
+    measure-result := Text {
+        visible: false;
+        text: root.shown-text;
+        font-family: root.result-font;
+        font-weight: root.result-weight;
+        font-size: root.result-size;
+        letter-spacing: root.result-spacing;
+    }
+    measure-dict := Text {
+        visible: false;
+        text: root.dict-text;
+        font-family: root.result-font;
+        font-weight: root.result-weight;
+        font-size: 14px;
+    }
+    // Plus a little for the white outline around the letters.
+    property <length> natural-width: max(measure-result.preferred-width, measure-dict.preferred-width) + 4px;
     height: top-margin + body-height + bottom-margin;
 
     // Wisps trail behind, swaying farther and fading in and out.
@@ -219,94 +250,99 @@ export component Hud inherits Window {
         width: root.width;
         height: root.height;
         cache-rendering-hint: true;
+        // The status dot and buttons sit on the billows above the text, so they
+        // take no room of their own; the buttons appear with the pointer.
+        HorizontalLayout {
+            x: side + root.pad - 4px;
+            y: top-margin - 26px;
+            width: body-width - 2 * root.pad + 8px;
+            height: 24px;
+            spacing: 2px;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 3.5px;
+                    background: root.paused ? #b9c2cf : root.error-text != "" ? #e88080 : #8fc3f5;
+                    opacity: root.busy ? 0.3 + 0.7 * abs(Math.sin(root.t * 400deg)) : 0.9;
+                }
+            }
+
+            Rectangle { }
+
+            min-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.mini = true; }
+                Rectangle {
+                    width: 10px;
+                    height: 1.6px;
+                    border-radius: 1px;
+                    background: #8696ad;
+                }
+            }
+
+            copy-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.copy-result(); }
+                Path {
+                    width: 11px;
+                    height: 11px;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                    stroke: root.copied ? #4caf7a : #8696ad;
+                    stroke-width: 1.2px;
+                    commands: root.copied ? "M 2 6.5 L 5 9.5 L 10.5 2.5" : "M 4 4 L 11 4 L 11 11 L 4 11 Z M 1 8 L 1 1 L 8 1";
+                }
+            }
+
+            pause-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.toggle-pause(); }
+                if root.paused: Path {
+                    width: 9px;
+                    height: 11px;
+                    viewbox-width: 10;
+                    viewbox-height: 12;
+                    fill: #8696ad;
+                    commands: "M 1 0 L 10 6 L 1 12 Z";
+                }
+                if !root.paused: HorizontalLayout {
+                    alignment: center;
+                    spacing: 3px;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
+                    Rectangle { width: 2.5px; border-radius: 1px; background: #8696ad; }
+                    Rectangle { width: 2.5px; border-radius: 1px; background: #8696ad; }
+                }
+            }
+
+            close-btn := IconButton {
+                opacity: root.tools;
+                clicked => { root.quit(); }
+                Path {
+                    width: 9px;
+                    height: 9px;
+                    viewbox-width: 10;
+                    viewbox-height: 10;
+                    stroke: #8696ad;
+                    stroke-width: 1.3px;
+                    commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+                }
+            }
+        }
+
         body := VerticalLayout {
             x: side;
             y: top-margin;
             width: body-width;
             height: self.preferred-height;
             alignment: start;
-            padding-left: 14px;
-            padding-right: 14px;
-            padding-bottom: 8px;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            padding-bottom: 4px;
             spacing: 6px;
 
-            // A quiet toolbar: status dot, then copy / pause / close.
-            HorizontalLayout {
-                height: 24px;
-                spacing: 2px;
-                VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        border-radius: 3.5px;
-                        background: root.paused ? #b9c2cf : root.error-text != "" ? #e88080 : #8fc3f5;
-                        opacity: root.busy ? 0.3 + 0.7 * abs(Math.sin(root.t * 400deg)) : 0.9;
-                    }
-                }
-
-                Rectangle { }
-
-                min-btn := IconButton {
-                    opacity: root.tools;
-                    clicked => { root.mini = true; }
-                    Rectangle {
-                        width: 10px;
-                        height: 1.6px;
-                        border-radius: 1px;
-                        background: #8696ad;
-                    }
-                }
-
-                copy-btn := IconButton {
-                    opacity: root.tools;
-                    clicked => { root.copy-result(); }
-                    Path {
-                        width: 11px;
-                        height: 11px;
-                        viewbox-width: 12;
-                        viewbox-height: 12;
-                        stroke: root.copied ? #4caf7a : #8696ad;
-                        stroke-width: 1.2px;
-                        commands: root.copied ? "M 2 6.5 L 5 9.5 L 10.5 2.5" : "M 4 4 L 11 4 L 11 11 L 4 11 Z M 1 8 L 1 1 L 8 1";
-                    }
-                }
-
-                pause-btn := IconButton {
-                    opacity: root.tools;
-                    clicked => { root.toggle-pause(); }
-                    if root.paused: Path {
-                        width: 9px;
-                        height: 11px;
-                        viewbox-width: 10;
-                        viewbox-height: 12;
-                        fill: #8696ad;
-                        commands: "M 1 0 L 10 6 L 1 12 Z";
-                    }
-                    if !root.paused: HorizontalLayout {
-                        alignment: center;
-                        spacing: 3px;
-                        padding-top: 7px;
-                        padding-bottom: 7px;
-                        Rectangle { width: 2.5px; border-radius: 1px; background: #8696ad; }
-                        Rectangle { width: 2.5px; border-radius: 1px; background: #8696ad; }
-                    }
-                }
-
-                close-btn := IconButton {
-                    opacity: root.tools;
-                    clicked => { root.quit(); }
-                    Path {
-                        width: 9px;
-                        height: 9px;
-                        viewbox-width: 10;
-                        viewbox-height: 10;
-                        stroke: #8696ad;
-                        stroke-width: 1.3px;
-                        commands: "M 1 1 L 9 9 M 9 1 L 1 9";
-                    }
-                }
-            }
 
             // Only the translation. Very long ones scroll (mouse wheel).
             flick := Flickable {
@@ -333,12 +369,12 @@ export component Hud inherits Window {
                     x: 0;
                     y: 0;
                     width: min(self.preferred-width, flick.width);
-                    text: root.result-text != "" ? root.result-text : root.paused ? "已暂停" : "选中文字，即刻翻译";
+                    text: root.shown-text;
                     color: root.candy;
                     font-family: root.result-font;
                     font-weight: root.result-weight;
-                    font-size: root.result-text != "" ? (root.latin ? 19px : 20px) : 16px;
-                    letter-spacing: root.latin ? 0.2px : 0.5px;
+                    font-size: root.result-size;
+                    letter-spacing: root.result-spacing;
                     stroke: #ffffff;
                     stroke-width: 1.5px;
                     stroke-style: outside;

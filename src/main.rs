@@ -350,7 +350,8 @@ fn keep_on_screen(hud: &Hud, hwnd: HWND) {
     }
 }
 
-/// Widens the cloud for longer texts and lets it grow to most of the screen height.
+/// Lets the cloud widen for longer texts (it otherwise just fits the text) and
+/// grow to most of the screen height.
 fn fit_to_content(hud: &Hud, text: &str) {
     // Rough single-line width at 20px: Chinese characters ~21px, Latin ~10px.
     let line_px: f32 = text.chars().map(|c| if c.is_ascii() { 10.5 } else { 21.0 }).sum();
@@ -360,14 +361,14 @@ fn fit_to_content(hud: &Hud, text: &str) {
         w if w < 380.0 * 10.0 => 580.0,
         _ => 700.0,
     };
-    let mut width = text_width + 2.0 * hud.get_side();
+    let mut width: f32 = text_width;
     if let Some(hwnd) = window::hwnd(hud.window()) {
         let scale = hud.window().scale_factor();
         let work = window::work_area(hwnd);
-        width = width.min((work.right - work.left) as f32 / scale - 20.0);
+        width = width.min((work.right - work.left) as f32 / scale - 2.0 * hud.get_side() - 20.0);
         hud.set_max_result_height(((work.bottom - work.top) as f32 / scale - 260.0).max(200.0));
     }
-    hud.set_window_width(width);
+    hud.set_max_body_width(width);
 }
 
 /// A local model is loaded into memory on its first request, which takes a few

@@ -83,6 +83,10 @@ OCR_GESTURE="dbl x y" cargo test reads_screen -- --ignored --nocapture
 Coordinates are physical pixels. OCR only reads inside the **foreground**
 window's rect, so point it at the active window's text.
 
+The highlight logic (`Shot::highlight_color`, `share_of`) is unit-tested on a
+synthetic page (`keeps_only_highlighted_words`): extend that test rather than
+selecting text on the user's screen.
+
 ## When a selection isn't translated
 
 Read `%APPDATA%\xiaobaiyun\debug.log` before guessing: it logs each

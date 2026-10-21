@@ -1,5 +1,11 @@
 //! Reads selected text off the screen with the OCR engine built into Windows.
 //! Used for remote screens whose clipboard does not reach this machine.
+//!
+//! The area around the drag is captured and read. Of the words found, only the
+//! ones the remote app painted with its selection highlight are kept; if no
+//! highlight shows up, the words between the drag's ends are taken instead.
+
+use std::collections::HashMap;
 
 use windows::Foundation::Rect;
 use windows::Globalization::Language;
@@ -18,8 +24,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_YVIRTUALSCREEN,
 };
 
+use crate::log;
 use crate::selection::Gesture;
 use crate::translate::is_cjk;
+
+/// A word counts as selected when this share of its box is highlight colour
+/// (the rest is the letters drawn on top of it).
+const HIGHLIGHTED_SHARE: f32 = 0.25;
 
 #[derive(Clone)]
 struct Word {
@@ -80,15 +91,129 @@ pub fn read_selection(gesture: Gesture) -> Option<String> {
     unsafe {
         let _ = GetWindowRect(GetForegroundWindow(), &mut viewer);
     }
-    let lines =
-        recognize(left.max(viewer.left), top.max(viewer.top), right.min(viewer.right), bottom.min(viewer.bottom))?;
+    let shot =
+        Shot::grab(left.max(viewer.left), top.max(viewer.top), right.min(viewer.right), bottom.min(viewer.bottom))?;
+    let lines = recognize(&shot)?;
 
+    // Best: exactly the words the app highlighted.
+    if let Some(color) = shot.highlight_color(gesture) {
+        let text = join(lines.iter().flatten().filter(|w| shot.share_of(w, color) >= HIGHLIGHTED_SHARE));
+        if !text.trim().is_empty() {
+            log!("OCR: kept the highlighted words");
+            return Some(text.trim().to_string());
+        }
+    }
+    log!("OCR: no selection highlight found, using the drag's ends");
     let text = match gesture {
         Gesture::Drag { from, to } => pick_range(&lines, from, to),
         Gesture::DoubleClick { at } => pick_word(&lines, at),
     };
     let text = text.trim().to_string();
     (!text.is_empty()).then_some(text)
+}
+
+/// A captured screen area: top-down BGRA pixels, with its screen position.
+struct Shot {
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    pixels: Vec<u8>,
+}
+
+impl Shot {
+    /// Captures a screen rectangle, clipped to the screens.
+    fn grab(left: i32, top: i32, right: i32, bottom: i32) -> Option<Shot> {
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        let (left, top) = (left.max(vx), top.max(vy));
+        let (width, height) = (right.min(vx + vw) - left, bottom.min(vy + vh) - top);
+        if width < 8 || height < 8 {
+            return None;
+        }
+        Some(Shot { left, top, width, height, pixels: grab_screen(left, top, width, height)? })
+    }
+
+    /// The colour at a screen point, if it was captured.
+    fn rgb(&self, x: i32, y: i32) -> Option<[u8; 3]> {
+        let (x, y) = (x - self.left, y - self.top);
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return None;
+        }
+        let i = ((y * self.width + x) * 4) as usize;
+        Some([self.pixels[i + 2], self.pixels[i + 1], self.pixels[i]])
+    }
+
+    /// The colour the app paints behind selected text, found along the drag:
+    /// the commonest colour there that is not the page background (the
+    /// commonest colour on the captured area's edge). None if no colour
+    /// dominates, e.g. nothing is highlighted.
+    fn highlight_color(&self, gesture: Gesture) -> Option<[u8; 3]> {
+        // Colours are compared in 16 steps per channel, so anti-aliasing and
+        // gradients don't split them.
+        let bucket = |c: [u8; 3]| [c[0] >> 4, c[1] >> 4, c[2] >> 4];
+
+        let mut edge: HashMap<[u8; 3], u32> = HashMap::new();
+        let (l, t, r, b) = (self.left, self.top, self.left + self.width - 1, self.top + self.height - 1);
+        let border = (l..=r).flat_map(|x| [(x, t), (x, b)]).chain((t..=b).flat_map(|y| [(l, y), (r, y)]));
+        for (x, y) in border.step_by(2) {
+            if let Some(c) = self.rgb(x, y) {
+                *edge.entry(bucket(c)).or_default() += 1;
+            }
+        }
+        let background = edge.into_iter().max_by_key(|&(_, n)| n)?.0;
+        let near_background = |k: [u8; 3]| k.iter().zip(background).all(|(a, b)| a.abs_diff(b) <= 1);
+
+        let (a, z) = match gesture {
+            Gesture::Drag { from, to } => (from, to),
+            Gesture::DoubleClick { at } => (POINT { x: at.x - 6, y: at.y }, POINT { x: at.x + 6, y: at.y }),
+        };
+        const SAMPLES: i32 = 200;
+        let mut along: HashMap<[u8; 3], (u32, [u32; 3])> = HashMap::new();
+        for i in 0..=SAMPLES {
+            let x = a.x + (z.x - a.x) * i / SAMPLES;
+            let y = a.y + (z.y - a.y) * i / SAMPLES;
+            let Some(c) = self.rgb(x, y) else { continue };
+            if near_background(bucket(c)) {
+                continue;
+            }
+            let entry = along.entry(bucket(c)).or_default();
+            entry.0 += 1;
+            for (total, channel) in entry.1.iter_mut().zip(c) {
+                *total += channel as u32;
+            }
+        }
+        let (count, sum) = along.into_values().max_by_key(|&(n, _)| n)?;
+        // Letters drawn on the highlight take part of the path; the highlight
+        // itself should still be the clear majority of what isn't background.
+        (count as i32 * 4 >= SAMPLES).then(|| sum.map(|s| (s / count) as u8))
+    }
+
+    /// The share of a word's box painted in `color`.
+    fn share_of(&self, word: &Word, color: [u8; 3]) -> f32 {
+        let (mut matching, mut total) = (0u32, 0u32);
+        for y in word.top as i32..word.bottom.ceil() as i32 {
+            for x in word.left as i32..word.right.ceil() as i32 {
+                if let Some(c) = self.rgb(x, y) {
+                    total += 1;
+                    if c.iter().zip(color).all(|(a, b)| a.abs_diff(b) <= 28) {
+                        matching += 1;
+                    }
+                }
+            }
+        }
+        if total == 0 {
+            0.0
+        } else {
+            matching as f32 / total as f32
+        }
+    }
 }
 
 /// Words in reading order between the two drag points.
@@ -164,29 +289,14 @@ fn join<'a>(words: impl Iterator<Item = &'a Word>) -> String {
     out
 }
 
-/// OCRs a screen rectangle and returns its words line by line, in screen pixels.
-fn recognize(left: i32, top: i32, right: i32, bottom: i32) -> Option<Vec<Vec<Word>>> {
-    let (vx, vy, vw, vh) = unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        )
-    };
-    let (left, top) = (left.max(vx), top.max(vy));
-    let (right, bottom) = (right.min(vx + vw), bottom.min(vy + vh));
-    let (w, h) = (right - left, bottom - top);
-    if w < 8 || h < 8 {
-        return None;
-    }
-    let pixels = grab_screen(left, top, w, h)?;
-
+/// OCRs a captured area and returns its words line by line, in screen pixels.
+fn recognize(shot: &Shot) -> Option<Vec<Vec<Word>>> {
+    let (left, top, w, h) = (shot.left, shot.top, shot.width, shot.height);
     // Windows OCR misses small text; doubling the image helps a lot.
     let max = OcrEngine::MaxImageDimension().ok()? as i32;
     let up = if w * 2 <= max && h * 2 <= max { 2 } else { 1 };
     let (iw, ih) = (w * up, h * up);
-    let pixels = if up == 1 { pixels } else { upscale(&pixels, w as usize, h as usize, up as usize) };
+    let pixels = if up == 1 { shot.pixels.clone() } else { upscale(&shot.pixels, w as usize, h as usize, up as usize) };
 
     let buffer = CryptographicBuffer::CreateFromByteArray(&pixels).ok()?;
     let bitmap = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(
@@ -314,6 +424,58 @@ fn upscale(src: &[u8], w: usize, h: usize, k: usize) -> Vec<u8> {
 mod tests {
     use super::*;
     use windows::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+
+    /// A white page with a blue selection over the first two of three words,
+    /// each word's letters drawn as dark strokes.
+    fn page() -> (Shot, Vec<Word>) {
+        let (w, h) = (300, 40);
+        let mut pixels = vec![255u8; (w * h * 4) as usize];
+        let mut paint = |x0: i32, x1: i32, y0: i32, y1: i32, bgr: [u8; 3]| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = ((y * w + x) * 4) as usize;
+                    pixels[i..i + 3].copy_from_slice(&bgr);
+                }
+            }
+        };
+        paint(10, 190, 10, 30, [0xD7, 0x78, 0x00]); // selection: #0078D7
+        let words: Vec<Word> = [("hello", 20), ("cloud", 110), ("sky", 210)]
+            .iter()
+            .map(|&(text, x)| Word {
+                text: text.into(),
+                left: x as f32,
+                top: 12.0,
+                right: x as f32 + 60.0,
+                bottom: 28.0,
+            })
+            .collect();
+        for word in &words {
+            // Vertical letter strokes, a quarter of the word's box.
+            for x in (word.left as i32..word.right as i32).step_by(8) {
+                paint(x, x + 2, 12, 28, [0x20, 0x20, 0x20]);
+            }
+        }
+        (Shot { left: 0, top: 0, width: w, height: h, pixels }, words)
+    }
+
+    #[test]
+    fn keeps_only_highlighted_words() {
+        let (shot, words) = page();
+        let drag = Gesture::Drag { from: POINT { x: 15, y: 20 }, to: POINT { x: 185, y: 20 } };
+        let color = shot.highlight_color(drag).expect("highlight found");
+        assert_eq!(color, [0x00, 0x78, 0xD7]);
+        let kept: Vec<&str> =
+            words.iter().filter(|w| shot.share_of(w, color) >= HIGHLIGHTED_SHARE).map(|w| w.text.as_str()).collect();
+        assert_eq!(kept, ["hello", "cloud"]);
+    }
+
+    #[test]
+    fn no_highlight_on_a_plain_page() {
+        let (mut shot, _) = page();
+        shot.pixels.iter_mut().for_each(|p| *p = 255);
+        let drag = Gesture::Drag { from: POINT { x: 15, y: 20 }, to: POINT { x: 185, y: 20 } };
+        assert_eq!(shot.highlight_color(drag), None);
+    }
 
     /// Manual check against whatever is on screen, in physical pixels:
     /// OCR_GESTURE="drag x1 y1 x2 y2" or "dbl x y" cargo test reads_screen -- --ignored --nocapture

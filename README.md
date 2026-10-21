@@ -44,8 +44,9 @@ Start-up options, handy for trying things out: `--translate "some text"`
 - **Right-click** the cloud to choose the translation engine (see below).
 - The cloud is painted procedurally (`src/cloud.rs`): sunlit billows, blue-grey
   shade underneath, translucent edges and faint wisps. It bobs gently, its
-  fringe and wisps drift on their own, it rises when the pointer rests on it,
-  and it grows to fit long translations (very long ones scroll).
+  fringe and wisps drift on their own, and it rises when the pointer rests on
+  it. It just fits the text, widening for long translations (very long ones
+  scroll); a new size fades in smoothly.
 - Text is drawn in candy colours with two embedded fonts (SIL Open Font
   License): round Fredoka for English results and ZCOOL KuaiLe (站酷快乐体) for
   Chinese ones (`ui/fonts/OFL-*.txt`).
@@ -77,7 +78,10 @@ Citrix, VMware, VirtualBox and others (list: `REMOTE_APPS` in
 1. Ctrl+C is forwarded to the remote machine; with clipboard sharing on, the text
    comes back and is translated.
 2. Without clipboard sharing, the selected area is read with the Windows OCR
-   engine. Install the Chinese and English OCR languages
+   engine, keeping only the words the remote app painted with its selection
+   highlight. After two clipboard misses in a row, a viewer goes straight to
+   OCR for 5 minutes (no 1.5 s wait, no Ctrl+C sent into the remote session).
+   Install the Chinese and English OCR languages
    (Settings → Time & Language → Language → add the language, include
    "Optical character recognition").
 
