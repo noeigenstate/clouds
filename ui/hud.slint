@@ -47,7 +47,9 @@ component CloudLayer inherits Rectangle {
     // 0 = just repainted, 1 = the new layer is fully in.
     in property <float> fade;
     // Applied to each image, not to this element: opacity on a container makes
-    // the renderer draw it off-screen first, every frame.
+    // the renderer draw it off-screen first, every frame. For the same reason
+    // the old image has no `visible`: with `opacity` it costs a layer per frame;
+    // at opacity 0 it is simply not seen.
     in property <float> strength: 1;
     in property <float> current-own: 1;
     in property <float> previous-own: 1;
@@ -63,7 +65,6 @@ component CloudLayer inherits Rectangle {
         puff-width: root.puff-width;
         puff-height: root.puff-height;
         body-drop: root.body-drop;
-        visible: root.fade < 1;
         opacity: root.strength * (1 - Math.pow(root.fade, root.morphing ? 3 : 2));
     }
     MorphImage {
@@ -149,12 +150,10 @@ export component Hud inherits Window {
     // Candy colours: strawberry, orange, lime, blueberry, grape.
     property <brush> candy: @linear-gradient(90deg, #f24b8f 0%, #f7892b 26%, #27b06e 50%, #3a86f0 74%, #9157f2 100%);
 
-    // Seconds since start, advanced by Rust about 30 times a second. The drift
-    // moves a fraction of a pixel per frame, so this looks as smooth as redrawing
-    // at every screen refresh, for a fraction of the cost.
-    in property <float> t;
-    // Rust calls this right after handing over repainted layers, and clears
-    // `fading` once they are in: only then is the cloud redrawn every refresh.
+    // Seconds since start. Reading animation-tick() redraws the cloud at every
+    // screen refresh (60 Hz or more), so it drifts and morphs smoothly.
+    property <float> t: animation-tick() / 1s;
+    // Rust calls this right after handing over repainted layers.
     public function cloud-repainted() {
         root.repainted-at = animation-tick();
         let now-mini = root.body-image.width * 1px == root.puff-width;
@@ -164,9 +163,8 @@ export component Hud inherits Window {
             root.collapsing = false;
         }
     }
-    in property <bool> fading;
     property <duration> repainted-at;
-    property <float> fade: root.fading ? clamp((animation-tick() - root.repainted-at) / 320ms, 0, 1) : 1;
+    property <float> fade: clamp((animation-tick() - root.repainted-at) / 320ms, 0, 1);
 
     // Minimizing, the cloud first shrinks to the puff's size, then the puff is
     // painted and fades in over it. Opening, the window grows at once, and once

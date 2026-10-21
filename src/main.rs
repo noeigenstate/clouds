@@ -62,10 +62,17 @@ impl Options {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    add_symbol_fonts();
     let options = Options::parse();
     let hud = Hud::new()?;
     if options.self_test {
         return Ok(());
+    }
+    // Windows wakes timers every 15.6 ms by default, so frames meant for every
+    // 16.7 ms came after 15.6 or 31.2 ms: about 47 a second, unevenly. With 1 ms
+    // timers the cloud moves at a steady 60 frames a second.
+    unsafe {
+        windows::Win32::Media::timeBeginPeriod(1);
     }
     let paused = Arc::new(AtomicBool::new(false));
     let settings = Arc::new(RwLock::new(settings::load()));
@@ -111,14 +118,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Timer::single_shot(Duration::from_millis(1500), move || {
             if let (Some(hud), Some((version, notes))) = (weak.upgrade(), update::finish()) {
                 let notes: Vec<String> = notes.iter().map(|n| format!("· {n}")).collect();
-                show_result(
-                    &hud,
-                    format!("已升级到 v{version}"),
-                    &notes.join(
-                        "
-",
-                    ),
-                );
+                show_result(&hud, format!("已升级到 v{version}"), &notes.join("\n"));
                 hud.invoke_open();
             }
         });
@@ -267,7 +267,9 @@ impl Translator {
 /// Puts a (possibly still growing) translation on the cloud.
 fn show_result(hud: &Hud, text: String, dict: &str) {
     fit_to_content(hud, &text);
-    hud.set_latin(!text.chars().any(translate::is_cjk));
+    // Fredoka has no Chinese punctuation either, so that also calls for ZCOOL.
+    let chinese = |c| translate::is_cjk(c) || matches!(c, '\u{3000}'..='\u{303f}' | '\u{ff00}'..='\u{ffef}');
+    hud.set_latin(!text.chars().any(chinese));
     hud.set_result_text(text.into());
     hud.set_dict_text(dict.into());
 }
@@ -275,13 +277,13 @@ fn show_result(hud: &Hud, text: String, dict: &str) {
 /// The cloud minimizes itself after this long without being used.
 const IDLE_MINIMIZE: Duration = Duration::from_secs(30);
 
-/// The cloud's heartbeat, about 30 times a second: advances the drift clock,
-/// finishes the window setup once the native window exists, keeps the cloud on
-/// screen and in front, minimizes it when idle, and repaints it (off the UI thread) whenever
-/// its text area changes size. `selections` counts the selections translated.
+/// The cloud's housekeeping, about 30 times a second: finishes the window setup
+/// once the native window exists, keeps the cloud on screen and in front,
+/// minimizes it when idle, installs a downloaded update, and repaints it (off
+/// the UI thread) whenever its text area changes size. `selections` counts the
+/// selections translated.
 fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32), selections: Arc<AtomicU64>) -> impl FnMut() {
     let weak = hud.as_weak();
-    let clock = Instant::now();
     let mut last_used = Instant::now();
     let mut seen_selections = 0;
     let mut ticks = 0u32;
@@ -292,7 +294,6 @@ fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32), selection
     let paint_id = Arc::new(AtomicU64::new(0));
     move || {
         let Some(hud) = weak.upgrade() else { return };
-        hud.set_t(clock.elapsed().as_secs_f32());
         let hwnd = match native {
             Some(h) => h,
             None => {
@@ -383,14 +384,7 @@ fn show_cloud(hud: &Hud, layers: &cloud::Layers) {
     hud.set_body_image(Image::from_rgba8(layers.body.clone()));
     hud.set_fringe_image(Image::from_rgba8(layers.fringe.clone()));
     hud.set_wisp_image(Image::from_rgba8(layers.wisps.clone()));
-    hud.set_fading(true);
     hud.invoke_cloud_repainted();
-    let weak = hud.as_weak();
-    Timer::single_shot(Duration::from_millis(400), move || {
-        if let Some(hud) = weak.upgrade() {
-            hud.set_fading(false);
-        }
-    });
 }
 
 /// Moves the window so the cloud stays inside the screen's work area.
@@ -418,13 +412,12 @@ fn keep_on_screen(hud: &Hud, hwnd: HWND) {
 fn fit_to_content(hud: &Hud, text: &str) {
     // Rough single-line width at 20px: Chinese characters ~21px, Latin ~10px.
     let line_px: f32 = text.chars().map(|c| if c.is_ascii() { 10.5 } else { 21.0 }).sum();
-    let text_width = match line_px {
+    let mut width: f32 = match line_px {
         w if w < 360.0 => 380.0,
         w if w < 380.0 * 4.0 => 460.0,
         w if w < 380.0 * 10.0 => 580.0,
         _ => 700.0,
     };
-    let mut width: f32 = text_width;
     if let Some(hwnd) = window::hwnd(hud.window()) {
         let scale = hud.window().scale_factor();
         let work = window::work_area(hwnd);
@@ -432,6 +425,22 @@ fn fit_to_content(hud: &Hud, text: &str) {
         hud.set_max_result_height(((work.bottom - work.top) as f32 / scale - 260.0).max(200.0));
     }
     hud.set_max_body_width(width);
+}
+
+/// The candy fonts lack many symbols (⇄ → ≈ ★ ✓ ① α …), and Slint looks for
+/// missing characters only in the generic sans-serif fonts, which lack them
+/// too: they came out as boxes. Fonts listed in SLINT_FONT_PATH become those
+/// fallbacks, so list Windows' own Segoe UI and Segoe UI Symbol. Must run
+/// before Slint loads any font.
+fn add_symbol_fonts() {
+    let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+    let fonts = std::path::Path::new(&windir).join("Fonts");
+    let mut paths: Vec<_> =
+        std::env::var_os("SLINT_FONT_PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    paths.extend(["segoeui.ttf", "seguisym.ttf"].map(|f| fonts.join(f)).into_iter().filter(|p| p.exists()));
+    if let Ok(list) = std::env::join_paths(paths) {
+        std::env::set_var("SLINT_FONT_PATH", list);
+    }
 }
 
 /// A local model is loaded into memory on its first request, which takes a few

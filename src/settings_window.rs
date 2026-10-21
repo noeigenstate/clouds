@@ -127,7 +127,7 @@ pub fn wire(hud: &Hud, win: &SettingsWindow, settings: Arc<RwLock<Settings>>) {
             let win = win.clone();
             update::update_now(hud.clone(), move |status| {
                 let _ = win.upgrade_in_event_loop(move |form| {
-                    form.set_updating(!status.is_empty() && status.starts_with("正在"));
+                    form.set_updating(status.starts_with("正在"));
                     form.set_update_status(status.into());
                 });
             });

@@ -15,14 +15,22 @@ description: Building, styling and verifying the transparent always-on-top Slint
   them into `SetWindowRgn`. If the layers in `hud.slint` move farther than those
   constants, raise them, or the moving edges get clipped.
 - The cloud is three images painted in Rust (on all cores) and animated
-  **inside** the window. Rust advances the clock `t` about 30 times a second.
-  Any binding that reads `animation-tick()` makes Slint redraw at every screen
-  refresh for as long as it is read (measured 14% vs 7% CPU): only read it
-  behind a flag that is on for a short animation (see `fading`).
+  **inside** the window. The clock `t` is `animation-tick()`, so the cloud is
+  redrawn at every screen refresh (60 Hz or more; the user asked for smooth
+  60 Hz motion). That costs more CPU than the old 30 Hz clock driven from Rust
+  (measured about 14% vs 7% of one core in an RDP session): keep per-frame
+  work light.
 - The text layer has `cache-rendering-hint: true` and moves as one piece, so
   keep anything that changes every frame out of it.
 - Put `opacity` on an `Image`, not on a container around it: a container with
-  opacity is drawn off-screen first, every frame.
+  opacity is drawn off-screen first, every frame. `visible` plus `opacity` on
+  one element counts as a container too.
+- Check the frame rate and off-screen layers with
+  `SLINT_DEBUG_PERFORMANCE=console,refresh_lazy target\debug\xiaobaiyun.exe`
+  (prints "average frames per second ... [N layers created]"): it should read
+  60 and 0 layers. Screenshot-diffing is no use for this (it also counts the
+  background). Without `timeBeginPeriod(1)` (in `main`), Windows' 15.6 ms
+  timers cut 60 Hz down to an uneven ~47.
 - Repainted layers fade in over the old ones (`CloudLayer`); images keep their
   painted size, so a stale layer is never stretched while the window resizes.
 - Move windows from the cursor's screen position (`window::Drag`), not from
