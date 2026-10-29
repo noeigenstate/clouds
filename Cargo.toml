@@ -1,6 +1,6 @@
 [package]
 name = "xiaobaiyun"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "小白云 XiaoBaiYun: a little cloud that floats on your screen and translates whatever you select, Chinese <-> English"
 license = "MIT"
@@ -23,6 +23,7 @@ features = [
     "Storage_Streams",
     "Foundation_Collections",
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_System_DataExchange",

@@ -76,6 +76,11 @@ const CONSOLE_CLASSES: &[&str] =
 /// Screenshot tools: dragging there draws a snip, it never selects text.
 const SKIP_APPS: &[&str] = &["screenclippinghost.exe", "snippingtool.exe", "screensketch.exe"];
 
+/// Standard dialog boxes (message boxes, task dialogs): Ctrl+C there copies the
+/// whole dialog ("[Window Title] ..."), selection or not, so only text boxes in
+/// them are copied from.
+const DIALOG_CLASS: &str = "#32770";
+
 /// Gestures go from the hook to the worker thread through this channel.
 static GESTURES: OnceLock<Sender<Gesture>> = OnceLock::new();
 
@@ -239,6 +244,10 @@ fn capture(gesture: Gesture) -> Option<String> {
             log!("skipped: console or screenshot tool");
             return None;
         }
+        if class == DIALOG_CLASS && !is_text_box(WindowFromPoint(start)) {
+            log!("skipped: a dialog box, and not on a text box");
+            return None;
+        }
 
         let remote = REMOTE_APPS.contains(&process.as_str());
         if !remote {
@@ -357,6 +366,12 @@ unsafe fn class_name(hwnd: HWND) -> String {
     let mut buf = [0u16; 128];
     let len = GetClassNameW(hwnd, &mut buf) as usize;
     String::from_utf16_lossy(&buf[..len])
+}
+
+/// Edit and rich-edit controls: the only places in a dialog box that select text.
+unsafe fn is_text_box(hwnd: HWND) -> bool {
+    let class = class_name(hwnd).to_lowercase();
+    class == "edit" || class.starts_with("richedit")
 }
 
 /// The executable's file name, lower case (e.g. "mstsc.exe").

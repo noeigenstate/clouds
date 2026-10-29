@@ -31,6 +31,14 @@ description: Building, styling and verifying the transparent always-on-top Slint
   60 and 0 layers. Screenshot-diffing is no use for this (it also counts the
   background). Without `timeBeginPeriod(1)` (in `main`), Windows' 15.6 ms
   timers cut 60 Hz down to an uneven ~47.
+- Windows 11 shows a new OpenGL window black until its first frame: a dark
+  blot around the cloud at start-up. `hide_until_drawn` (a rendering notifier)
+  cloaks the window (`DWMWA_CLOAK`) and sets its region at `RenderingSetup`,
+  and uncloaks it after 3 frames (1 s at the latest). Check the order with a
+  poller that logs `IsWindowVisible`, `DWMWA_CLOAKED` (14) and
+  `GetWindowRgnBox` every few ms: the window must never be visible, uncloaked
+  and without a region. The cloud's winit window class is `Window Class`;
+  skip `Winit Thread Event Target`.
 - Repainted layers fade in over the old ones (`CloudLayer`); images keep their
   painted size, so a stale layer is never stretched while the window resizes.
 - Move windows from the cursor's screen position (`window::Drag`), not from
@@ -101,6 +109,8 @@ must both be clean before a commit.
    corners must "pass through", the body must hit the cloud.
 5. PowerShell 5.1 scripts that contain Chinese paths/text must be saved as
    UTF-8 **with BOM**.
+6. `Start-Process -ArgumentList '--translate', 'two words'` does not quote:
+   the app gets only "two". Pass `'"two words"'`, or one word.
 
 `scripts/shot.ps1` does steps 1–4 and saves a PNG next to itself:
 
@@ -127,6 +137,14 @@ selecting text on the user's screen.
 Read `%APPDATA%\xiaobaiyun\debug.log` before guessing: it logs each
 gesture, the foreground app, whether Ctrl+C changed the clipboard, and the
 engine's answer and time.
+
+A translation that appears without a selection is usually an app that copies
+something on Ctrl+C with nothing selected. Standard dialogs (`#32770`: message
+boxes, task dialogs) copy their whole text (`[Window Title] ...`), so
+`capture` only copies there when the gesture is on an Edit/RichEdit control.
+To see a dialog's controls without clicking, open one from a test script
+(`MessageBoxW`, or `TaskDialog` inside a Common-Controls-6 activation context)
+and list them with `EnumChildWindows`.
 
 ## Don't
 

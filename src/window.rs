@@ -4,7 +4,9 @@
 use std::cell::Cell;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
 use windows::Win32::Graphics::Gdi::{
     CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, SetWindowRgn,
     HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
@@ -49,6 +51,16 @@ pub fn make_floating(hwnd: HWND) {
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex as isize);
         let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED;
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+    }
+}
+
+/// Hides the window from the screen (or shows it again) while it stays open and
+/// keeps rendering: DWM just doesn't compose it.
+pub fn cloak(hwnd: HWND, cloaked: bool) {
+    let value = BOOL::from(cloaked);
+    unsafe {
+        let size = std::mem::size_of::<BOOL>() as u32;
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &value as *const BOOL as *const _, size);
     }
 }
 

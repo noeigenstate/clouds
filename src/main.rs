@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, Image, PhysicalPosition, Timer, TimerMode};
+use slint::{ComponentHandle, Image, PhysicalPosition, RenderingState, Timer, TimerMode};
 use windows::Win32::Foundation::HWND;
 
 use settings::{Engine, Settings};
@@ -108,6 +108,8 @@ fn main() -> Result<(), slint::PlatformError> {
     settings_window::wire(&hud, &settings_window, settings);
 
     let selections = translator.generation.clone();
+    let first_region = Rc::new(Cell::new(Some(first.region)));
+    hide_until_drawn(&hud, first_region.clone());
     hud.show()?;
     if let Some(text) = options.translate {
         thread::spawn(move || translator.translate(text));
@@ -137,12 +139,44 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let ticker = Timer::default();
-    ticker.start(TimerMode::Repeated, Duration::from_millis(33), tick(&hud, first.region, first_key, selections));
+    ticker.start(TimerMode::Repeated, Duration::from_millis(33), tick(&hud, first_region, first_key, selections));
 
     slint::run_event_loop_until_quit()?;
     let pos = hud.window().position();
     window::save_position(pos.x, pos.y);
     Ok(())
+}
+
+/// Windows 11 shows a new OpenGL window black until its first frame is on
+/// screen: a dark blot around the cloud. So the window is cloaked, and given its
+/// cloud shape, before the first frame, and appears once a few frames are drawn
+/// (after a second at the latest).
+fn hide_until_drawn(hud: &Hud, first_region: Rc<Cell<Option<Vec<[i32; 4]>>>>) {
+    let weak = hud.as_weak();
+    let mut frames = 0;
+    let set = hud.window().set_rendering_notifier(move |state, _| {
+        let first_frame = matches!(state, RenderingState::RenderingSetup);
+        if !first_frame && !(matches!(state, RenderingState::AfterRendering) && frames < 3) {
+            return;
+        }
+        let Some(hud) = weak.upgrade() else { return };
+        let Some(hwnd) = window::hwnd(hud.window()) else { return };
+        if first_frame {
+            window::cloak(hwnd, true);
+            if let Some(region) = first_region.take() {
+                window::set_region(hwnd, &region, hud.window().scale_factor());
+            }
+            Timer::single_shot(Duration::from_secs(1), move || window::cloak(hwnd, false));
+        } else {
+            frames += 1;
+            if frames == 3 {
+                window::cloak(hwnd, false);
+            }
+        }
+    });
+    if let Err(e) = set {
+        log!("can't watch the first frames ({e:?}), the window shows before them");
+    }
 }
 
 /// The cloud's own buttons and dragging.
@@ -282,12 +316,16 @@ const IDLE_MINIMIZE: Duration = Duration::from_secs(30);
 /// minimizes it when idle, installs a downloaded update, and repaints it (off
 /// the UI thread) whenever its text area changes size. `selections` counts the
 /// selections translated.
-fn tick(hud: &Hud, first_region: Vec<[i32; 4]>, first_key: (i32, i32), selections: Arc<AtomicU64>) -> impl FnMut() {
+fn tick(
+    hud: &Hud,
+    first_region: Rc<Cell<Option<Vec<[i32; 4]>>>>,
+    first_key: (i32, i32),
+    selections: Arc<AtomicU64>,
+) -> impl FnMut() {
     let weak = hud.as_weak();
     let mut last_used = Instant::now();
     let mut seen_selections = 0;
     let mut ticks = 0u32;
-    let mut first_region = Some(first_region);
     let mut native: Option<HWND> = None;
     let mut painted_for = first_key;
     let mut last_rect = window::Area::default();
