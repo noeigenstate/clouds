@@ -128,9 +128,25 @@ OCR_GESTURE="dbl x y" cargo test reads_screen -- --ignored --nocapture
 Coordinates are physical pixels. OCR only reads inside the **foreground**
 window's rect, so point it at the active window's text.
 
-The highlight logic (`Shot::highlight_color`, `share_of`) is unit-tested on a
-synthetic page (`keeps_only_highlighted_words`): extend that test rather than
-selecting text on the user's screen.
+The highlight logic (`pick_selection` and the `Shot` checks) is unit-tested on
+synthetic pages: extend those tests rather than selecting text on the user's
+screen.
+
+OCR only ever returns text the remote app highlighted. There is no fallback to
+the words between the drag's ends: that fallback translated window drags and
+taskbar double-clicks (phantom translations). A highlight must:
+- contrast with the page;
+- reach both drag ends (looking inward, scaled by DPI);
+- for a double-click, be a single run, not a padded block such as a title bar,
+  button or selected file row;
+- not have been there already at button-down (a small baseline capture, taken
+  only for viewers whose clipboard isn't working).
+
+Remote screens lag, so captures are retried every 50 ms for up to 400 ms.
+Follow-ups not done yet:
+- triple-click in panes that paint the whole row (VS Code, terminals);
+- a window dragged partly out of the baseline band;
+- drags taller than the ±30 px band get no baseline veto.
 
 ## When a selection isn't translated
 

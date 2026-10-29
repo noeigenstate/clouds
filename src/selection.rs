@@ -81,8 +81,13 @@ const SKIP_APPS: &[&str] = &["screenclippinghost.exe", "snippingtool.exe", "scre
 /// them are copied from.
 const DIALOG_CLASS: &str = "#32770";
 
-/// Gestures go from the hook to the worker thread through this channel.
-static GESTURES: OnceLock<Sender<Gesture>> = OnceLock::new();
+/// Button-down captures are requested here, so the hook never waits for pixels.
+enum MouseEvent {
+    Down { window: isize, point: POINT, at: Instant },
+    Up { gesture: Option<Gesture>, at: Instant },
+}
+
+static GESTURES: OnceLock<Sender<MouseEvent>> = OnceLock::new();
 
 /// Starts watching for selections; `on_text` gets each newly selected text.
 pub fn start(paused: Arc<AtomicBool>, on_text: impl Fn(String) + Send + 'static) {
@@ -127,12 +132,15 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 clicks.down = Some(point);
                 clicks.down_on_handle = on_handle_cursor();
                 clicks.down_window = Some((window, rect_of(window)));
+                if let Some(tx) = GESTURES.get() {
+                    let _ = tx.send(MouseEvent::Down { window: window.0 as isize, point, at: Instant::now() });
+                }
             }
             WM_LBUTTONUP => {
-                if let Some(gesture) = button_released(clicks, point) {
-                    if let Some(tx) = GESTURES.get() {
-                        let _ = tx.send(gesture);
-                    }
+                let at = Instant::now();
+                let gesture = button_released(clicks, point);
+                if let Some(tx) = GESTURES.get() {
+                    let _ = tx.send(MouseEvent::Up { gesture, at });
                 }
             }
             _ => {}
@@ -189,17 +197,59 @@ unsafe fn on_handle_cursor() -> bool {
     GetCursorInfo(&mut info).is_ok() && handles.contains(&(info.hCursor.0 as isize))
 }
 
-fn worker(rx: Receiver<Gesture>, paused: Arc<AtomicBool>, on_text: impl Fn(String)) {
+/// Pairs each release with its own timely baseline, including during debounce.
+fn selection_event(
+    event: MouseEvent,
+    baseline: &mut Option<ocr::Baseline>,
+    paused: bool,
+    capture: impl FnOnce(isize, POINT, Instant) -> Option<ocr::Baseline>,
+) -> Option<(Gesture, Option<ocr::Baseline>)> {
+    match event {
+        MouseEvent::Down { window, point, at } => {
+            *baseline = if paused { None } else { capture(window, point, at) };
+            None
+        }
+        MouseEvent::Up { gesture, at } => {
+            let before = baseline.take().filter(|b| b.ready_by(at));
+            gesture.map(|g| (g, before))
+        }
+    }
+}
+
+fn needs_baseline(process: &str) -> bool {
+    REMOTE_APPS.contains(&process) && !remote_clipboard_works(process)
+}
+
+fn baseline_for_press(window: isize, point: POINT, at: Instant) -> Option<ocr::Baseline> {
+    let window = HWND(window as *mut _);
+    if unsafe { process_name(window) }.is_some_and(|p| needs_baseline(&p)) {
+        ocr::Baseline::capture(window, point, at)
+    } else {
+        None
+    }
+}
+
+fn worker(rx: Receiver<MouseEvent>, paused: Arc<AtomicBool>, on_text: impl Fn(String)) {
     unsafe {
         let _ = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     let mut last = String::new();
-    while let Ok(mut gesture) = rx.recv() {
+    let mut baseline = None;
+    while let Ok(event) = rx.recv() {
+        let Some((mut gesture, mut before)) =
+            selection_event(event, &mut baseline, paused.load(Ordering::Relaxed), baseline_for_press)
+        else {
+            continue;
+        };
         // Give the app a moment to finish updating its selection; a burst of
         // gestures (a triple-click) collapses into the latest one.
         thread::sleep(Duration::from_millis(30));
-        while let Ok(g) = rx.try_recv() {
-            gesture = g;
+        while let Ok(event) = rx.try_recv() {
+            if let Some(latest) =
+                selection_event(event, &mut baseline, paused.load(Ordering::Relaxed), baseline_for_press)
+            {
+                (gesture, before) = latest;
+            }
         }
         if paused.load(Ordering::Relaxed) {
             log!("gesture ignored: paused");
@@ -207,7 +257,7 @@ fn worker(rx: Receiver<Gesture>, paused: Arc<AtomicBool>, on_text: impl Fn(Strin
         }
         // A panic here must not end the worker, or every later selection is lost.
         let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let Some(text) = capture(gesture) else { return };
+            let Some(text) = capture(gesture, before.as_ref()) else { return };
             if text == last {
                 log!("same text as last time, skipped");
                 return;
@@ -221,7 +271,7 @@ fn worker(rx: Receiver<Gesture>, paused: Arc<AtomicBool>, on_text: impl Fn(Strin
     }
 }
 
-fn capture(gesture: Gesture) -> Option<String> {
+fn capture(gesture: Gesture, baseline: Option<&ocr::Baseline>) -> Option<String> {
     let start = match gesture {
         Gesture::Drag { from, .. } => from,
         Gesture::DoubleClick { at } => at,
@@ -265,7 +315,7 @@ fn capture(gesture: Gesture) -> Option<String> {
         } else {
             log!("{process}: the clipboard hasn't come back lately, reading the screen");
         }
-        let text = ocr::read_selection(gesture);
+        let text = ocr::read_selection(gesture, baseline);
         log!("OCR read {} characters", text.as_ref().map_or(0, |t| t.chars().count()));
         text
     }
@@ -384,4 +434,114 @@ unsafe fn process_name(hwnd: HWND) -> Option<String> {
     ok.ok()?;
     let path = String::from_utf16_lossy(&buf[..len as usize]);
     path.rsplit('\\').next().map(str::to_lowercase)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_event_pairs_down_and_up_during_debounce() {
+        let pressed = Instant::now();
+        let point = POINT { x: 15, y: 20 };
+        let mut baseline = None;
+        let first_ready = pressed + Duration::from_millis(1);
+        let second_ready = pressed + Duration::from_millis(11);
+        let down = MouseEvent::Down { window: 7, point, at: pressed };
+        assert!(selection_event(down, &mut baseline, false, |window, at, time| {
+            assert_eq!(window, 7);
+            assert_eq!(at, point);
+            assert_eq!(time, pressed);
+            Some(ocr::Baseline::for_test(first_ready))
+        })
+        .is_none());
+        let first = selection_event(
+            MouseEvent::Up {
+                gesture: Some(Gesture::Drag { from: point, to: POINT { x: 185, y: 20 } }),
+                at: pressed + Duration::from_millis(5),
+            },
+            &mut baseline,
+            false,
+            |_, _, _| panic!("a release must not capture"),
+        )
+        .expect("first release");
+        assert!(baseline.is_none());
+
+        // A new press during debounce must not replace the completed gesture's baseline.
+        selection_event(
+            MouseEvent::Down { window: 7, point, at: pressed + Duration::from_millis(10) },
+            &mut baseline,
+            false,
+            |_, _, _| Some(ocr::Baseline::for_test(second_ready)),
+        );
+        assert!(first.1.as_ref().is_some_and(|b| b.ready_by(first_ready)));
+        assert!(!baseline.as_ref().expect("pending second press").ready_by(first_ready));
+        let second = selection_event(
+            MouseEvent::Up {
+                gesture: Some(Gesture::DoubleClick { at: point }),
+                at: pressed + Duration::from_millis(15),
+            },
+            &mut baseline,
+            false,
+            |_, _, _| panic!("a release must not capture"),
+        )
+        .expect("second release");
+        assert!(matches!(second.0, Gesture::DoubleClick { .. }));
+        assert!(second.1.as_ref().is_some_and(|b| b.ready_by(second_ready) && !b.ready_by(first_ready)));
+        assert!(baseline.is_none());
+    }
+
+    #[test]
+    fn selection_event_discards_unpaired_or_late_baselines() {
+        let pressed = Instant::now();
+        let point = POINT { x: 15, y: 20 };
+        let mut baseline = Some(ocr::Baseline::for_test(pressed));
+        assert!(selection_event(
+            MouseEvent::Up { gesture: None, at: pressed },
+            &mut baseline,
+            false,
+            |_, _, _| panic!("a release must not capture"),
+        )
+        .is_none());
+        assert!(baseline.is_none());
+        baseline = Some(ocr::Baseline::for_test(pressed + Duration::from_millis(1)));
+        let late = selection_event(
+            MouseEvent::Up { gesture: Some(Gesture::DoubleClick { at: point }), at: pressed },
+            &mut baseline,
+            false,
+            |_, _, _| panic!("a release must not capture"),
+        )
+        .expect("gesture survives a late baseline");
+        assert!(late.1.is_none());
+        assert!(baseline.is_none());
+        baseline = Some(ocr::Baseline::for_test(pressed));
+        selection_event(MouseEvent::Down { window: 7, point, at: pressed }, &mut baseline, false, |_, _, _| None);
+        let missing = selection_event(
+            MouseEvent::Up { gesture: Some(Gesture::DoubleClick { at: point }), at: pressed },
+            &mut baseline,
+            false,
+            |_, _, _| panic!("a release must not capture"),
+        )
+        .expect("gesture survives a failed capture");
+        assert!(missing.1.is_none());
+        baseline = Some(ocr::Baseline::for_test(pressed));
+        selection_event(MouseEvent::Down { window: 7, point, at: pressed }, &mut baseline, true, |_, _, _| {
+            panic!("a paused press must not capture")
+        });
+        assert!(baseline.is_none());
+    }
+
+    #[test]
+    fn baseline_skips_working_clipboards_and_local_apps() {
+        for process in ["mstsc.exe", "notepad.exe"] {
+            remote_clipboard_result(process, true);
+            assert!(!needs_baseline(process));
+            remote_clipboard_result(process, false);
+            assert!(!needs_baseline(process));
+            remote_clipboard_result(process, false);
+            assert_eq!(needs_baseline(process), process == "mstsc.exe");
+            remote_clipboard_result(process, true);
+            assert!(!needs_baseline(process));
+        }
+    }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "xiaobaiyun"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "小白云 XiaoBaiYun: a little cloud that floats on your screen and translates whatever you select, Chinese <-> English"
 license = "MIT"
