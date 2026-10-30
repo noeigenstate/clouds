@@ -5,9 +5,10 @@
 // it reach the windows behind.
 
 // Candy fonts, both SIL OFL: Fredoka (semi-bold, very round) for English
-// results, ZCOOL KuaiLe (站酷快乐体, playful) for Chinese. Missing characters
-// fall back to system fonts.
-import "fonts/ZCOOLKuaiLe-Regular.ttf";
+// results, ChillRound M (寒蝉团圆体, a rounded gothic) for Chinese, cut down to
+// GB 2312 plus symbols and renamed "XBY Round", as its OFL licence asks of
+// modified copies. Missing characters fall back to system fonts.
+import "fonts/XBYRound.ttf";
 import "fonts/Fredoka-SemiBold.ttf";
 import { SettingsWindow } from "settings.slint";
 
@@ -138,8 +139,8 @@ export component Hud inherits Window {
     callback quit();
     callback open-settings();
 
-    // Result fonts: round Fredoka for English, ZCOOL KuaiLe for Chinese.
-    property <string> result-font: root.latin ? "Fredoka" : "ZCOOL KuaiLe";
+    // Result fonts: round Fredoka for English, ChillRound M for Chinese.
+    property <string> result-font: root.latin ? "Fredoka" : "XBY Round";
     property <int> result-weight: root.latin ? 600 : 400;
     property <length> result-size: root.result-text != "" ? (root.latin ? 19px : 20px) : 16px;
     property <length> result-spacing: root.latin ? 0.2px : 0.5px;
@@ -216,7 +217,7 @@ export component Hud inherits Window {
     no-frame: true;
     always-on-top: true;
     background: transparent;
-    default-font-family: "ZCOOL KuaiLe";
+    default-font-family: "XBY Round";
     width: body-width + 2 * side;
 
     // Invisible copies that measure the text's natural (unwrapped) width.

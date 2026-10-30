@@ -1,9 +1,9 @@
-Copyright 2018 The ZCOOL KuaiLe Project Authors (https://github.com/googlefonts/zcool-kuaile)
+© 2023 ChillType, with Reserved Font Name 'ChillRoundF' 'ChillRoundM'.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at:
-https://openfontlicense.org
 
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
@@ -91,3 +91,8 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+ui/fonts/XBYRound.ttf is a subset of ChillRoundM 1.805 (GB 2312 plus symbols),
+renamed "XBY Round" because ChillRoundM is a Reserved Font Name.
+Its glyphs derive from Zen Maru Gothic (Copyright 2021 The Zen Maru Gothic
+Authors, https://github.com/googlefonts/zen-marugothic), also under the OFL.

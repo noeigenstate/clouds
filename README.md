@@ -56,7 +56,7 @@ Start-up options, handy for trying things out: `--translate "some text"`
   it. It just fits the text, widening for long translations (very long ones
   scroll); a new size fades in smoothly.
 - Text is drawn in candy colours with two embedded fonts (SIL Open Font
-  License): round Fredoka for English results and ZCOOL KuaiLe (站酷快乐体) for
+  License): round Fredoka for English results and ChillRound M (寒蝉团圆体) for
   Chinese ones (`ui/fonts/OFL-*.txt`).
 - Clicking the cloud never takes focus away from the app you are reading.
 
@@ -130,4 +130,4 @@ Notes:
 ## License
 
 MIT (see `LICENSE`). The embedded fonts keep their own SIL Open Font License:
-`ui/fonts/OFL-Fredoka.txt`, `ui/fonts/OFL-ZCOOLKuaiLe.txt`.
+`ui/fonts/OFL-Fredoka.txt`, `ui/fonts/OFL-ChillRound.txt`.

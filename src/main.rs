@@ -301,7 +301,7 @@ impl Translator {
 /// Puts a (possibly still growing) translation on the cloud.
 fn show_result(hud: &Hud, text: String, dict: &str) {
     fit_to_content(hud, &text);
-    // Fredoka has no Chinese punctuation either, so that also calls for ZCOOL.
+    // Fredoka has no Chinese punctuation either, so that also calls for ChillRound.
     let chinese = |c| translate::is_cjk(c) || matches!(c, '\u{3000}'..='\u{303f}' | '\u{ff00}'..='\u{ffef}');
     hud.set_latin(!text.chars().any(chinese));
     hud.set_result_text(text.into());

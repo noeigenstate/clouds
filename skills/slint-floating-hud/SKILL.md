@@ -58,7 +58,9 @@ description: Building, styling and verifying the transparent always-on-top Slint
   in the other app and hides the taskbar button.
 - Layout inside the cloud needs `height: self.preferred-height;` on the
   VerticalLayout, otherwise it stretches to the window height and overflows.
-- Fonts: the UI embeds Fredoka (English results) and ZCOOL KuaiLe (Chinese)
+- Fonts: the UI embeds Fredoka (English results) and ChillRound M (Chinese, as "XBY Round":
+  cut to GB 2312 + symbols with `fontTools.subset` to keep the exe small,
+  and renamed: OFL forbids a modified font keeping its Reserved Font Name)
   via `import "fonts/...ttf"`; Rust sets `latin` to pick one. Google Fonts often
   ships only variable fonts: cut a static weight with
   `python -m fontTools.varLib.instancer <var.ttf> wght=600 wdth=100 --update-name-table -o <out.ttf>`.
@@ -168,8 +170,15 @@ and list them with `EnumChildWindows`.
   hook captures their real selections and fake clicks land in their apps.
 - Don't kill and relaunch the app for screenshots while the user is trying it:
   their copy disappears. Launch one copy for them at the end.
+- Don't run the exe with `--version` or `--help`: it has neither, ignores them
+  and starts a full copy that hooks the mouse. Read the version from `Cargo.toml`.
+- Launch anything the owner keeps using (their cloud, Ollama) outside the
+  agent's shell, or it dies when the shell session is cleaned up:
+  `Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{CommandLine='"<exe>" <args>'}`,
+  or `Start-Process explorer.exe '"<exe>"'` when there are no arguments.
 - In Git Bash, very long `python - <<'EOF'` heredocs can fail to parse; write
-  the patch script to a file and run it instead.
+  the patch script to a file and run it instead. Chinese text piped into
+  `python -` arrives mangled too: use a UTF-8 file and `python -X utf8`.
 
 ## Updates (`src/update.rs`)
 
