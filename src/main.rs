@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, Image, PhysicalPosition, RenderingState, Timer, TimerMode};
+use slint::{ComponentHandle, Image, PhysicalPosition, Timer, TimerMode};
 use windows::Win32::Foundation::HWND;
 
 use settings::{Engine, Settings};
@@ -41,8 +41,8 @@ struct Options {
     update_now: bool,
     /// `--updated-from <version>`: just installed by the update (see `update`).
     updated: bool,
-    /// `--self-test`: exit as soon as the window could be created; the update
-    /// checks a downloaded version this way.
+    /// `--self-test`: create the hidden native window and renderer, then exit;
+    /// the update checks a downloaded version this way.
     self_test: bool,
 }
 
@@ -62,10 +62,46 @@ impl Options {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log!("panic: {info}");
+        previous_hook(info);
+    }));
     add_symbol_fonts();
     let options = Options::parse();
+    let fallback = window::wants_direct_composition();
+    let revealed = Rc::new(Cell::new(false));
+    // WGPU also reports some surface configuration failures through panics.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(options, revealed.clone())));
+    let result = match result {
+        Ok(result) => result,
+        Err(panic) if revealed.get() => std::panic::resume_unwind(panic),
+        Err(_) => Err("renderer startup panicked".into()),
+    };
+    match result {
+        Err(error) if fallback && !revealed.get() => {
+            // Slint/winit cannot replace a failed backend in this process. Retry
+            // once in a fresh GL process, including failures during surface creation.
+            log!("DirectComposition startup failed ({error}); retrying with OpenGL");
+            let exe = std::env::current_exe().map_err(|e| format!("can't locate OpenGL fallback: {e}"))?;
+            let status = std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .env(window::GL_FALLBACK, "1")
+                .status()
+                .map_err(|e| format!("can't start OpenGL fallback after {error}: {e}"))?;
+            // The updater watches this process until the GL child acknowledges
+            // startup. Keep it alive, then preserve the child's actual exit code.
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        result => result,
+    }
+}
+
+fn run(options: Options, revealed: Rc<Cell<bool>>) -> Result<(), slint::PlatformError> {
+    window::init_renderer()?;
     let hud = Hud::new()?;
     if options.self_test {
+        show_when_ready(&hud, None, true, revealed)?;
         return Ok(());
     }
     // Windows wakes timers every 15.6 ms by default, so frames meant for every
@@ -74,29 +110,32 @@ fn main() -> Result<(), slint::PlatformError> {
     unsafe {
         windows::Win32::Media::timeBeginPeriod(1);
     }
-    let paused = Arc::new(AtomicBool::new(false));
-    let settings = Arc::new(RwLock::new(settings::load()));
-    log!("started, engine {:?}", settings.read().unwrap().engine);
-    warm_engine(&settings.read().unwrap());
-
-    // Keep the connection to Google fresh, so a selection never waits for a new
-    // proxy/TLS handshake.
-    thread::spawn(|| loop {
-        translate::warm_up();
-        thread::sleep(Duration::from_secs(120));
-    });
-
     let (x, y) = window::load_position().unwrap_or_else(|| {
         let work = window::primary_work_area();
         (work.right - 900, work.top + 40)
     });
     hud.window().set_position(PhysicalPosition::new(x, y));
+    hud.set_mini(options.mini);
 
     // Paint the first cloud before showing the window, so it never appears bare.
     let first = cloud::render(&cloud_spec(&hud));
     show_cloud(&hud, &first);
-    // Taken before `--mini` can shrink the text area, so that change gets painted.
     let first_key = cloud_key(&hud);
+    let hwnd = show_when_ready(&hud, Some(first.region), false, revealed.clone())?;
+    if !revealed.get() {
+        return Err("cloud startup ended before reveal".into());
+    }
+
+    // A failed renderer must leave no hooks or app workers in a fallback parent.
+    let paused = Arc::new(AtomicBool::new(false));
+    let settings = Arc::new(RwLock::new(settings::load()));
+    log!("started, engine {:?}", settings.read().unwrap().engine);
+    warm_engine(&settings.read().unwrap());
+    // Keep the connection to Google fresh between selections.
+    thread::spawn(|| loop {
+        translate::warm_up();
+        thread::sleep(Duration::from_secs(120));
+    });
 
     wire_hud(&hud, paused.clone());
     let translator = Translator { hud: hud.as_weak(), generation: Arc::default(), settings: settings.clone() };
@@ -108,13 +147,9 @@ fn main() -> Result<(), slint::PlatformError> {
     settings_window::wire(&hud, &settings_window, settings);
 
     let selections = translator.generation.clone();
-    let first_region = Rc::new(Cell::new(Some(first.region)));
-    hide_until_drawn(&hud, first_region.clone());
-    hud.show()?;
     if let Some(text) = options.translate {
         thread::spawn(move || translator.translate(text));
     }
-    hud.set_mini(options.mini);
     if options.updated {
         let weak = hud.as_weak();
         Timer::single_shot(Duration::from_millis(1500), move || {
@@ -139,7 +174,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let ticker = Timer::default();
-    ticker.start(TimerMode::Repeated, Duration::from_millis(33), tick(&hud, first_region, first_key, selections));
+    ticker.start(TimerMode::Repeated, Duration::from_millis(33), tick(&hud, hwnd, first_key, selections));
 
     slint::run_event_loop_until_quit()?;
     let pos = hud.window().position();
@@ -147,36 +182,74 @@ fn main() -> Result<(), slint::PlatformError> {
     Ok(())
 }
 
-/// Windows 11 shows a new OpenGL window black until its first frame is on
-/// screen: a dark blot around the cloud. So the window is cloaked, and given its
-/// cloud shape, before the first frame, and appears once a few frames are drawn
-/// (after a second at the latest).
-fn hide_until_drawn(hud: &Hud, first_region: Rc<Cell<Option<Vec<[i32; 4]>>>>) {
+/// Prepare the hidden native window before showing it, then reveal it after a
+/// few redraws. A rendering notifier forces a separate clear-only flush, which
+/// evicts FemtoVG/WGPU's scene pipelines and recompiles them on every frame.
+fn show_when_ready(
+    hud: &Hud,
+    region: Option<Vec<[i32; 4]>>,
+    self_test: bool,
+    revealed: Rc<Cell<bool>>,
+) -> Result<HWND, slint::PlatformError> {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+
     let weak = hud.as_weak();
-    let mut frames = 0;
-    let set = hud.window().set_rendering_notifier(move |state, _| {
-        let first_frame = matches!(state, RenderingState::RenderingSetup);
-        if !first_frame && !(matches!(state, RenderingState::AfterRendering) && frames < 3) {
-            return;
-        }
+    let result = Rc::new(Cell::new(None));
+    let ready = result.clone();
+    slint::spawn_local(async move {
         let Some(hud) = weak.upgrade() else { return };
-        let Some(hwnd) = window::hwnd(hud.window()) else { return };
-        if first_frame {
+        let shown: Result<HWND, slint::PlatformError> = async {
+            // Hud::new registers the native window for creation even while hidden.
+            // Waiting here also lets surface errors reach the main event loop.
+            let _native = hud.window().winit_window().await?;
+            let hwnd = window::hwnd(hud.window()).ok_or("cloud has no Win32 window")?;
             window::cloak(hwnd, true);
-            if let Some(region) = first_region.take() {
+            if self_test {
+                return Ok(hwnd);
+            }
+            if let Some(region) = region {
                 window::set_region(hwnd, &region, hud.window().scale_factor());
             }
-            Timer::single_shot(Duration::from_secs(1), move || window::cloak(hwnd, false));
-        } else {
-            frames += 1;
-            if frames == 3 {
+            let reveal = Rc::new(move || {
+                if revealed.get() {
+                    return;
+                }
                 window::cloak(hwnd, false);
-            }
+                revealed.set(true);
+                let _ = slint::quit_event_loop();
+            });
+            Timer::single_shot(Duration::from_secs(1), {
+                let reveal = reveal.clone();
+                move || reveal()
+            });
+            let mut frames = 0;
+            hud.window().on_winit_window_event(move |_, event| {
+                if matches!(event, WindowEvent::RedrawRequested) && frames < 3 {
+                    frames += 1;
+                    if frames == 3 {
+                        // The event filter runs before drawing; reveal after dispatch.
+                        let reveal = reveal.clone();
+                        Timer::single_shot(Duration::ZERO, move || reveal());
+                    }
+                }
+                EventResult::Propagate
+            });
+            window::make_floating(hwnd);
+            hud.show()?;
+            // Showing rewrites winit's extended styles; repair them while cloaked.
+            window::make_floating(hwnd);
+            Ok(hwnd)
         }
-    });
-    if let Err(e) = set {
-        log!("can't watch the first frames ({e:?}), the window shows before them");
-    }
+        .await;
+        let done = self_test || shown.is_err();
+        ready.set(Some(shown));
+        if done {
+            let _ = slint::quit_event_loop();
+        }
+    })
+    .map_err(|e| format!("can't schedule the cloud window: {e}"))?;
+    slint::run_event_loop_until_quit()?;
+    result.take().ok_or("window startup did not complete")?
 }
 
 /// The cloud's own buttons and dragging.
@@ -311,40 +384,20 @@ fn show_result(hud: &Hud, text: String, dict: &str) {
 /// The cloud minimizes itself after this long without being used.
 const IDLE_MINIMIZE: Duration = Duration::from_secs(30);
 
-/// The cloud's housekeeping, about 30 times a second: finishes the window setup
-/// once the native window exists, keeps the cloud on screen and in front,
+/// The cloud's housekeeping, about 30 times a second: keeps it on screen and in front,
 /// minimizes it when idle, installs a downloaded update, and repaints it (off
 /// the UI thread) whenever its text area changes size. `selections` counts the
 /// selections translated.
-fn tick(
-    hud: &Hud,
-    first_region: Rc<Cell<Option<Vec<[i32; 4]>>>>,
-    first_key: (i32, i32),
-    selections: Arc<AtomicU64>,
-) -> impl FnMut() {
+fn tick(hud: &Hud, hwnd: HWND, first_key: (i32, i32), selections: Arc<AtomicU64>) -> impl FnMut() {
     let weak = hud.as_weak();
     let mut last_used = Instant::now();
     let mut seen_selections = 0;
     let mut ticks = 0u32;
-    let mut native: Option<HWND> = None;
     let mut painted_for = first_key;
     let mut last_rect = window::Area::default();
     let paint_id = Arc::new(AtomicU64::new(0));
     move || {
         let Some(hud) = weak.upgrade() else { return };
-        let hwnd = match native {
-            Some(h) => h,
-            None => {
-                let Some(h) = window::hwnd(hud.window()) else { return };
-                window::make_floating(h);
-                native = Some(h);
-                h
-            }
-        };
-        if let Some(region) = first_region.take() {
-            window::set_region(hwnd, &region, hud.window().scale_factor());
-        }
-
         // Whenever the cloud moved or grew, pull it back on screen, but not
         // while it is being dragged.
         let rect = window::window_rect(hwnd);

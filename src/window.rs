@@ -20,6 +20,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::settings::data_file;
 
+pub const GL_FALLBACK: &str = "XIAOBAIYUN_GL_FALLBACK";
+
+pub fn wants_direct_composition() -> bool {
+    std::env::var_os("SLINT_BACKEND").is_none() && std::env::var_os(GL_FALLBACK).is_none()
+}
+
 /// A rectangle in physical screen pixels.
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct Area {
@@ -33,6 +39,34 @@ impl From<RECT> for Area {
     fn from(r: RECT) -> Self {
         Area { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
     }
+}
+
+/// Present premultiplied alpha through DirectComposition instead of WGL, whose
+/// window alpha is ignored by some Windows 11 drivers (including AMD over RDP).
+pub fn init_renderer() -> Result<(), slint::PlatformError> {
+    use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
+
+    let direct_composition = wants_direct_composition();
+    let backend = slint::BackendSelector::new().with_winit_window_attributes_hook(move |attributes| {
+        // ShowWindow must not activate while winit rewrites the HUD's styles.
+        // Settings request focus explicitly through bring_to_front instead.
+        attributes.with_active(false).with_no_redirection_bitmap(direct_composition)
+    });
+    // Keep explicit renderer overrides for diagnostics and older, GL-only GPUs.
+    if std::env::var_os("SLINT_BACKEND").is_some() {
+        return backend.select();
+    }
+    let renderer = if direct_composition {
+        // WGPU's default HWND swap chain is opaque. A visual supports premultiplied
+        // alpha; no redirection bitmap is needed behind the composition visual.
+        // Set these before Slint probes adapters, while startup is single-threaded.
+        std::env::set_var("WGPU_BACKEND", "dx12");
+        std::env::set_var("WGPU_DX12_PRESENTATION_SYSTEM", "Visual");
+        "femtovg-wgpu"
+    } else {
+        "femtovg"
+    };
+    backend.backend_name("winit".into()).renderer_name(renderer.into()).select()
 }
 
 pub fn hwnd(window: &slint::Window) -> Option<HWND> {
@@ -115,9 +149,8 @@ unsafe fn monitor_work_area(monitor: HMONITOR) -> Area {
 }
 
 /// Clips the window to the cloud's shape, given as rectangles in logical pixels
-/// (`[left, top, right, bottom]`). Windows only passes clicks through
-/// transparent pixels of layered windows, which cannot show OpenGL content, so
-/// the region is what lets clicks next to the cloud reach the apps behind it.
+/// (`[left, top, right, bottom]`). The composition visual supplies per-pixel
+/// transparency; the region lets clicks next to the cloud reach the apps behind it.
 pub fn set_region(hwnd: HWND, rects: &[[i32; 4]], scale: f32) {
     let px = |v: i32| (v as f32 * scale).round() as i32;
     unsafe {

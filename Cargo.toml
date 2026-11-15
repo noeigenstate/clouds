@@ -1,12 +1,17 @@
 [package]
 name = "xiaobaiyun"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "小白云 XiaoBaiYun: a little cloud that floats on your screen and translates whatever you select, Chinese <-> English"
 license = "MIT"
 
 [dependencies]
-slint = { version = "1.18", features = ["raw-window-handle-06"] }
+# Pin the versioned winit API used to create the composition window.
+# Omit software: a failed GPU renderer must reach our GL retry, not Slint's software fallback.
+slint = { version = "=1.18.1", default-features = false, features = [
+    "std", "backend-default", "renderer-femtovg", "renderer-femtovg-wgpu",
+    "accessibility", "compat-1-2", "system-tray", "raw-window-handle-06", "unstable-winit-030",
+] }
 raw-window-handle = "0.6"
 ureq = "3"
 serde = { version = "1", features = ["derive"] }
@@ -41,7 +46,7 @@ features = [
 
 [build-dependencies]
 embed-resource = "3.0.12"
-slint-build = "1.18"
+slint-build = "=1.18.1"
 
 [profile.release]
 opt-level = 3

@@ -7,9 +7,10 @@ description: Building, styling and verifying the transparent always-on-top Slint
 
 ## Rules learned the hard way
 
-- **Never add `WS_EX_LAYERED`** to the Slint window. Slint renders with OpenGL
-  (femtovg); a layered window shows nothing at all. `WS_EX_TRANSPARENT` without
-  layered does not pass clicks through either.
+- **Do not use `WS_EX_LAYERED` as a WGL alpha repair.** Depending on the driver
+  and layered attributes it can blank GL content or leave it visible without
+  repairing alpha. The DX12/DirectComposition path needs no layered style.
+  `WS_EX_TRANSPARENT` without layered does not pass clicks through either.
 - **Click-through = window region.** `cloud::render` returns the visible rows
   (`spans`, dilated by `MOTION_X`/`MOTION_Y`) and `window::set_region` turns
   them into `SetWindowRgn`. If the layers in `hud.slint` move farther than those
@@ -31,10 +32,27 @@ description: Building, styling and verifying the transparent always-on-top Slint
   60 and 0 layers. Screenshot-diffing is no use for this (it also counts the
   background). Without `timeBeginPeriod(1)` (in `main`), Windows' 15.6 ms
   timers cut 60 Hz down to an uneven ~47.
-- Windows 11 shows a new OpenGL window black until its first frame: a dark
-  blot around the cloud at start-up. `hide_until_drawn` (a rendering notifier)
-  cloaks the window (`DWMWA_CLOAK`) and sets its region at `RenderingSetup`,
-  and uncloaks it after 3 frames (1 s at the latest). Check the order with a
+- Windows 11 can show a new OpenGL window black before its first frame.
+  `show_when_ready` waits for the hidden native window, cloaks it
+  (`DWMWA_CLOAK`), sets its region, applies floating styles, shows it without
+  activation, then reapplies floating styles while still cloaked. Cloaking
+  hides pixels, not activation: repairing styles only after show is too late
+  to preserve the user's foreground selection. The winit hook sets
+  `with_active(false)` for every renderer path (including explicit overrides),
+  so Windows uses `SW_SHOWNOACTIVATE` even if pre-show property updates rewrite
+  the styles. Apply `make_floating` both before and after `show()`: the first
+  call sets NOACTIVATE/TOOLWINDOW at entry, the second repairs winit's
+  `GWL_EXSTYLE` rewrite. Rollback re-show follows the same sequence while cloaked.
+  Settings never receive the HUD's NOACTIVATE style; their existing explicit
+  `bring_to_front` call requests keyboard focus after showing.
+  Ordinary mini/full resizing keeps fixed width/height constraints
+  (min == max), so `set_resizable(false)` and clearing an already-clear
+  MAXIMIZED flag produce no `apply_diff` style rewrite. Decorations and window
+  level also stay constant. If these flags change, reapply the floating styles.
+  It uncloaks after dispatching 3 redraw events (1 s at the latest), without
+  a rendering notifier (see the CPU warning below). That completes the startup
+  event-loop pass; only then are hooks, app workers and the updater started.
+  Check the order with a
   poller that logs `IsWindowVisible`, `DWMWA_CLOAKED` (14) and
   `GetWindowRgnBox` every few ms: the window must never be visible, uncloaked
   and without a region. The cloud's winit window class is `Window Class`;
@@ -65,6 +83,69 @@ description: Building, styling and verifying the transparent always-on-top Slint
   ships only variable fonts: cut a static weight with
   `python -m fontTools.varLib.instancer <var.ttf> wght=600 wdth=100 --update-name-table -o <out.ttf>`.
   Draw icons with `Path` rather than symbol glyphs.
+
+## Black halo and renderer CPU
+
+On Windows 11 Pro with an AMD RX 9070 XT, driver 32.0.32015.7029, over RDP,
+WGL's per-pixel window alpha was ignored continuously: the whole region was
+black wherever the cloud was transparent. Removing the region made the whole
+rectangle black. Adding layered alpha/colour-key attributes did not repair it.
+The startup cloak alone cannot fix this persistent halo.
+
+The default uses FemtoVG/WGPU, `WGPU_BACKEND=dx12`,
+`WGPU_DX12_PRESENTATION_SYSTEM=Visual` and `WS_EX_NOREDIRECTIONBITMAP`.
+This selects a premultiplied-alpha DirectComposition swap chain. The lead
+verified soft transparent edges, with and without the region, and intact
+rainbow text and white outline. Keep the region for hit-testing.
+
+Do not install a rendering notifier, even one that does nothing after startup.
+Slint 1.18.1's `i-slint-renderer-femtovg/lib.rs` flushes the clear before
+`BeforeRendering`, then flushes the scene separately. FemtoVG 0.27.0's
+`src/renderer/wgpu.rs` prunes unused pipelines after every flush, so these two
+flushes evict each other's pipelines and recreate them every frame. See
+[Slint issue 12030](https://github.com/slint-ui/slint/issues/12030).
+The window event filter used for startup does not split rendering into flushes.
+
+Measure release builds in the same session, with the same `--translate probe`
+copy and animating cloud, for 10 seconds. CPU percent of one core is
+`100 * delta CPU time / delta wall time`; record process and per-thread CPU,
+not just Task Manager's percentage across all cores. The lead measured the
+notifier version at 93% (91.6% on the UI thread), versus 23% for
+`SLINT_BACKEND=winit-femtovg` in the same exe. After removing the notifier the
+lead measured 22%, versus 23-30% for GL; full/mini transparency, the rainbow
+and outline, click-through, post-reveal click focus and startup cloak order
+passed. Keep CPU at most about 35%, with smooth 60 Hz animation in both full
+and mini states.
+Build checks do not establish that CPU result.
+
+Unset `SLINT_BACKEND` and `XIAOBAIYUN_GL_FALLBACK` for the new default. Explicit
+user-set `SLINT_BACKEND` overrides take priority. Only failures before the cloud
+is uncloaked can trigger a GL retry; later errors propagate and later panics
+resume unwinding. The panic hook writes diagnostic details to `log!`.
+
+The retry uses a fresh process marked with private
+`XIAOBAIYUN_GL_FALLBACK=1`, preserving every argument. The parent has no hooks
+or app workers, always waits for the child, and exits with the child's status.
+Do not set `SLINT_BACKEND` for an automatic fallback: it would be inherited by
+future updates. The updater clears the private marker for both `--self-test`
+and `--updated-from` launches, and stops the process tree on timeout before
+rollback. The new version calls `update::finish()` in the existing 1.5 s timer
+inside the session event loop, after reveal and native settings-window creation.
+Do not acknowledge before that loop: a failure creating the second DX12 visual
+must still allow rollback. `finish()` still starts the `.old` cleanup worker.
+
+`--self-test` runs the event loop until `winit_window()` resolves, which covers
+device, Visual swap-chain and surface creation, then quits with the window
+hidden/cloaked and no hooks or app workers. `Hud::new()` alone only enumerates
+adapters and is not a renderer test. Self-test fallback also waits for the GL
+child's actual result. The standalone software renderer is not compiled:
+Slint's implicit fallback must not silently select it when DX12 is unavailable.
+
+For a lead-run test copy, set `WGPU_ADAPTER_NAME` to a deliberately nonexistent
+name with both renderer overrides unset. WGPU 30 panics during deferred adapter
+selection; expect one GL child and an idle supervisor, not a rollback or two
+hook-owning copies. This works for `--self-test` too. Clear the test variable
+afterwards; normal launches and the next update must try DirectComposition.
 
 ## Logo and icon
 

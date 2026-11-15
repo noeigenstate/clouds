@@ -9,6 +9,7 @@
 //! version is never installed automatically again.
 
 use std::fs;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +18,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use slint::ComponentHandle;
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::settings::data_file;
-use crate::{log, translate, Hud};
+use crate::{log, translate, window, Hud};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LATEST: &str = "https://api.github.com/repos/noeigenstate/clouds/releases/latest";
@@ -87,9 +89,11 @@ pub fn download(release: Release) -> Result<Update, String> {
     Ok(Update { release, exe })
 }
 
-/// Whether the new exe starts and exits cleanly with `--self-test`.
+/// Whether the new exe creates its hidden renderer and exits cleanly.
 fn self_test(exe: &Path) -> bool {
-    let Ok(mut child) = Command::new(exe).arg("--self-test").spawn() else { return false };
+    let Ok(mut child) = Command::new(exe).env_remove(window::GL_FALLBACK).arg("--self-test").spawn() else {
+        return false;
+    };
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(10) {
         if let Ok(Some(status)) = child.try_wait() {
@@ -97,8 +101,7 @@ fn self_test(exe: &Path) -> bool {
         }
         thread::sleep(Duration::from_millis(100));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    stop_child(&mut child);
     false
 }
 
@@ -173,7 +176,7 @@ pub fn install(hud: &Hud, update: Update) {
     let _ = fs::write(&notes, format!("{version}\n{}", update.release.notes.join("\n")));
     let child = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
         swap(&exe, &update.exe)?;
-        Command::new(&exe).args(["--updated-from", VERSION]).spawn().map_err(|e| {
+        Command::new(&exe).env_remove(window::GL_FALLBACK).args(["--updated-from", VERSION]).spawn().map_err(|e| {
             roll_back(&exe);
             e.to_string()
         })
@@ -201,7 +204,17 @@ pub fn install(hud: &Hud, update: Update) {
             if ok {
                 let _ = slint::quit_event_loop();
             } else {
+                let hwnd = window::hwnd(hud.window());
+                if let Some(hwnd) = hwnd {
+                    window::cloak(hwnd, true);
+                    window::make_floating(hwnd);
+                }
                 let _ = hud.show();
+                // A re-show rewrites the styles just like the initial show.
+                if let Some(hwnd) = hwnd {
+                    window::make_floating(hwnd);
+                    window::cloak(hwnd, false);
+                }
                 INSTALLING.store(false, Ordering::SeqCst);
             }
         });
@@ -246,9 +259,22 @@ fn wait_until_started(mut child: Child, started: &Path) -> bool {
         }
         thread::sleep(Duration::from_millis(200));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    stop_child(&mut child);
     false
+}
+
+/// A fallback supervisor may still own a GL child. Stop the tree before rollback
+/// so no descendant keeps the replacement exe open or later installs hooks.
+fn stop_child(child: &mut Child) {
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+        let _ = Command::new(PathBuf::from(windir).join("System32/taskkill.exe"))
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .output();
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 fn give_up(version: &str) {
